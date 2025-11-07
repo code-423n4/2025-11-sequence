@@ -1,0 +1,9 @@
+./src/TrailsIntentEntrypoint.sol
+./src/TrailsRouter.sol
+./src/TrailsRouterShim.sol
+./src/guards/DelegatecallGuard.sol
+./src/interfaces/IMulticall3.sol
+./src/interfaces/ITrailsIntentEntrypoint.sol
+./src/interfaces/ITrailsRouter.sol
+./src/interfaces/ITrailsRouterShim.sol
+./src/libraries/TrailsSentinelLib.sol

@@ -1,0 +1,17 @@
+./script/TrailsIntentEntrypoint.s.sol
+./script/TrailsRouter.s.sol
+./script/TrailsRouterShim.s.sol
+./test/TrailsIntentEntrypoint.t.sol
+./test/TrailsRouter.t.sol
+./test/TrailsRouterShim.t.sol
+./test/guards/DelegatecallGuard.t.sol
+./test/libraries/TrailsSentinelLib.t.sol
+./test/mocks/MockERC20.sol
+./test/mocks/MockMulticall3.sol
+./test/mocks/MockNonStandardERC20.sol
+./test/mocks/MockSenderGetter.sol
+./test/script/TrailsIntentEntrypoint.s.t.sol
+./test/script/TrailsRouter.s.t.sol
+./test/script/TrailsRouterShim.s.t.sol
+./test/utils/Create2Utils.sol
+./test/utils/TstoreUtils.sol
