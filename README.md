@@ -1,4 +1,4 @@
-# Sequence audit details
+# Sequence: Transaction Rails audit details
 - Total Prize Pool: $18,500 in USDC
     - HM awards: up to $14,400 in USDC
         - If no valid Highs or Mediums are found, the HM pool is $0
