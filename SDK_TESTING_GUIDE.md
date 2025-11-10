@@ -3128,106 +3128,77 @@ This guide provides comprehensive coverage for testing Trails contracts with the
 
 ## Test Scenarios Matrix
 
-The 0xtrails SDK includes over 50 comprehensive test scenarios that cover all major Trails contract functionality. These scenarios test various execution paths including cross-chain transfers, same-chain swaps, gasless execution, and failure handling.
+The 0xtrails SDK includes comprehensive test scenarios that cover all major Trails contract functionality. These scenarios test various execution paths including cross-chain transfers, same-chain swaps, gasless execution, and failure handling.
 
-The table below summarizes all available scenarios with their purpose, expected contract interactions, and key testing focus areas:
+The table below summarizes the available scenario categories with their purpose, expected contract interactions, and key testing focus areas:
 
-| Category | Scenario ID | Description | Expected Contract Flow | Testing Focus |
-|----------|-------------|-------------|------------------------|---------------|
-| **Cross-Chain (ERC20 → Native)** | ARBITRUM_USDC_TO_BASE_ETH | Arbitrum USDC → Base ETH (EXACT_OUTPUT 0.00001 ETH) | 1. `TrailsIntentEntrypoint.depositToIntent()`<br>2. `TrailsRouterShim.execute()` (approval + bridge)<br>3. `TrailsRouter.validateOpHashAndSweep()`<br>4. `TrailsRouter.sweep()` (ETH transfer) | EIP-712 validation, token approvals, bridge integration, native ETH handling, conditional fee sweeping |
-| **Cross-Chain (ERC20 → Native)** | REBALANCE_BASE_ETH_FROM_KATANA_ETH | Katana ETH → Base ETH (native-to-native) | 1. `TrailsIntentEntrypoint` (ETH deposit)<br>2. `TrailsRouterShim` (native bridge)<br>3. `TrailsRouter.sweep()` (ETH transfer + gas refund) | Native ETH bridging, gas refunds, MEV protection |
-| **Cross-Chain (ERC20 → ERC20)** | PAY_USDC_BASE | Payment: Arbitrum USDC → Base USDC (0.01 USDC) | 1. `TrailsIntentEntrypoint` (USDC deposit)<br>2. `TrailsRouterShim` (approval + bridge)<br>3. `TrailsRouter` (ERC20 transfer)<br>4. `TrailsRouter.sweep()` (dust cleanup) | Provider integration, token decimals, slippage tolerance, recipient verification |
-| **Cross-Chain (ERC20 → ERC20)** | FUND_USDC_BASE | Funding: Arbitrum USDC → Base USDC (0.01 USDC) | Same as PAY_USDC_BASE | Funding use case, same-chain vs cross-chain routing |
-| **Cross-Chain (ERC20 → ERC20)** | RECEIVE_USDC_BASE | Receiving: Arbitrum USDC → Base USDC (0.01 USDC) | Same as PAY_USDC_BASE | Receiving use case, final recipient handling |
-| **Cross-Chain (ERC20 → ERC20)** | RECEIVE_USDC_BASE_LIFI | LiFi provider variant (0.12 USDC) | Same flow, different provider | LiFi integration, route optimization |
-| **Cross-Chain (ERC20 → ERC20)** | RECEIVE_USDC_BASE_CCTP | CCTP provider variant (0.01 USDC) | Same flow, different provider | CCTP integration, canonical token handling |
-| **Cross-Chain (ERC20 → ERC20)** | RECEIVE_USDC_BASE_RELAY | Relay provider variant (0.01 USDC) | Same flow, different provider | Relay integration, liquidity routing |
-| **Cross-Chain (Native → Native)** | REBALANCE_BASE_ETH_FROM_KATANA_ETH | Katana ETH → Base ETH rebalancing | 1. `TrailsIntentEntrypoint` (ETH deposit)<br>2. `TrailsRouterShim` (native bridge)<br>3. `TrailsRouter.sweep()` (ETH transfer) | Native ETH bridging, gas refunds, MEV protection |
-| **Cross-Chain (ERC20 → Native w/ Calldata)** | REBALANCE_BASE_ETH_FROM_ARBITRUM_USDC | Arbitrum USDC → Base ETH with destination execution | 1. `TrailsIntentEntrypoint` (ERC20 deposit)<br>2. `TrailsRouterShim` (swap + bridge)<br>3. `TrailsRouter.injectAndCall()` (ETH injection)<br>4. `TrailsRouter.sweep()` (remaining ETH) | Balance injection, calldata surgery, value forwarding |
-| **Cross-Chain (Native → ERC20 w/ Calldata)** | MINT_NFT_ARBITRUM_ETH | Base ETH → Arbitrum ETH → NFT mint (0.00001 ETH) | 1. `TrailsIntentEntrypoint` (ETH deposit)<br>2. `TrailsRouterShim` (bridge + swap)<br>3. `TrailsRouter.injectAndCall()` (ERC20 approval + NFT mint)<br>4. `TrailsRouter.validateOpHashAndSweep()` (multi-step fees) | Multi-step execution, ERC20 approvals, NFT contract interaction, error bubbling |
-| **Cross-Chain (Native → ERC20 w/ Calldata)** | MINT_NFT_POLYGON_BAT | Base ETH → Polygon BAT → NFT mint (0.3 BAT) | Same as MINT_NFT_ARBITRUM_ETH | Polygon integration, BAT token handling (skipped) |
-| **Cross-Chain (ERC20 → ERC20 w/ Calldata)** | MINT_NFT_BASE_USDC | Arbitrum USDC → Base USDC → NFT mint (0.01 USDC) | 1. `TrailsIntentEntrypoint` (USDC deposit)<br>2. `TrailsRouterShim` (bridge)<br>3. `TrailsRouter.injectAndCall()` (ERC20 approval + NFT mint)<br>4. `TrailsRouter.sweep()` (dust cleanup) | DeFi/NFT integration, ERC20 approvals, same-token execution |
-| **Cross-Chain (ERC20 → ERC20 w/ Calldata)** | MINT_NFT_ARBITRUM_USDC | Base USDC → Arbitrum USDC → NFT mint (0.01 USDC) | Same as MINT_NFT_BASE_USDC | Reverse direction testing, Arbitrum NFT contracts |
-| **Cross-Chain (ERC20 → ERC20 w/ Calldata)** | DEPOSIT_AAVE_BASE_USDC | Arbitrum USDC → Base USDC → Aave deposit (0.01 USDC) | 1. `TrailsIntentEntrypoint` (USDC deposit)<br>2. `TrailsRouterShim` (bridge)<br>3. `TrailsRouter.injectAndCall()` (Aave supply)<br>4. `TrailsRouter.sweep()` (aTokens to user) | Aave V3 integration, ERC20 approvals, position verification |
-| **Cross-Chain (ERC20 → ERC20 w/ Calldata)** | DEPOSIT_MORPHO_BASE_USDC | Arbitrum USDC → Base USDC → Morpho deposit (0.01 USDC) | Same as DEPOSIT_AAVE_BASE_USDC | Morpho integration, lending protocol testing |
-| **Cross-Chain (ERC20 → ERC20 w/ Calldata)** | FUND_DEPOSIT_YEARN_KATANA_USDC | Arbitrum USDC → Katana USDC → Yearn deposit (0.01 USDC) | 1. `TrailsIntentEntrypoint` (USDC deposit)<br>2. `TrailsRouterShim` (bridge)<br>3. `TrailsRouter.injectAndCall()` (Yearn deposit)<br>4. `TrailsRouter.sweep()` (yTokens to user) | Yearn integration, vault deposit mechanics |
-| **Cross-Chain (Native → Native w/ Calldata)** | DEPOSIT_AAVE_BASE_ETH | Arbitrum ETH → Base ETH → Aave deposit (0.00001 ETH) | 1. `TrailsIntentEntrypoint` (ETH deposit)<br>2. `TrailsRouterShim` (bridge)<br>3. `TrailsRouter.injectAndCall()` (Aave ETH supply)<br>4. `TrailsRouter.sweep()` (aETH to user) | Native ETH injection, Aave ETH handling, receipt tokens |
-| **Same-Chain (ERC20 → Native)** | SAME_CHAIN_BASE_USDC_TO_ETH | Base USDC → Base ETH (0.00001 ETH) | 1. `TrailsIntentEntrypoint` (USDC deposit)<br>2. `TrailsRouter.execute()` (DEX swap)<br>3. `TrailsRouter.sweep()` (ETH transfer + fees) | DEX integration, same-chain routing, token → native |
-| **Same-Chain (Native → ERC20)** | SAME_CHAIN_BASE_ETH_TO_USDC | Base ETH → Base USDC (0.01 USDC) | 1. `TrailsIntentEntrypoint` (ETH deposit)<br>2. `TrailsRouter.execute()` (ETH → ERC20 swap)<br>3. `TrailsRouter.sweep()` (ERC20 transfer + gas refund) | Native → token, gas refunds, slippage handling |
-| **Same-Chain (ERC20 → ERC20)** | SAME_CHAIN_BASE_USDC_TO_WETH | Base USDC → Base WETH (0.00001 WETH) | 1. `TrailsIntentEntrypoint` (USDC deposit)<br>2. `TrailsRouter.execute()` (ERC20 swap)<br>3. `TrailsRouter.sweep()` (WETH transfer) | ERC20 ↔ ERC20 swaps, wrapping mechanics, dust handling |
-| **Same-Chain (Native → Native)** | SAME_CHAIN_BASE_ETH_TO_WETH | Base ETH → Base WETH wrapping (0.00001 WETH) | 1. `TrailsIntentEntrypoint` (ETH deposit)<br>2. `TrailsRouter.execute()` (WETH deposit)<br>3. `TrailsRouter.sweep()` (WETH transfer) | ETH wrapping, native → wrapped token |
-| **Same-Chain (w/ Calldata)** | SAME_CHAIN_BASE_USDC_TO_ETH_AAVE_DEPOSIT | Base USDC → Base ETH → Aave deposit | 1. `TrailsIntentEntrypoint` (USDC deposit)<br>2. `TrailsRouter.injectAndCall()` (swap + Aave deposit)<br>3. `TrailsRouter.sweep()` (aETH to user) | Complex multicall, Aave integration, same-chain execution |
-| **Same-Chain (w/ Calldata)** | SAME_CHAIN_BASE_ETH_TO_USDC_AAVE_DEPOSIT | Base ETH → Base USDC → Aave deposit | 1. `TrailsIntentEntrypoint` (ETH deposit)<br>2. `TrailsRouter.injectAndCall()` (swap + Aave deposit)<br>3. `TrailsRouter.sweep()` (aUSDC to user) | Native → ERC20 + protocol deposit |
-| **Same-Chain (w/ Calldata)** | SAME_CHAIN_BASE_ETH_TO_USDC_MORPHO_DEPOSIT | Base ETH → Base USDC → Morpho deposit | Same as above | Morpho integration, lending protocols |
-| **Same-Chain (w/ Calldata)** | SAME_CHAIN_BASE_USDC_TO_USDC_NFT_MINT | Base USDC → Base USDC → NFT mint (same token) | 1. `TrailsIntentEntrypoint` (USDC deposit)<br>2. `TrailsRouter.injectAndCall()` (direct NFT mint)<br>3. `TrailsRouter.sweep()` (dust cleanup) | Same-token execution, no swap needed |
-| **Same-Chain (w/ Calldata)** | SAME_CHAIN_BASE_ETH_TO_USDC_NFT_MINT | Base ETH → Base USDC → NFT mint | 1. `TrailsIntentEntrypoint` (ETH deposit)<br>2. `TrailsRouter.injectAndCall()` (swap + NFT mint)<br>3. `TrailsRouter.sweep()` (dust cleanup) | ETH → ERC20 + NFT integration |
-| **Gasless (Cross-Chain)** | GASLESS_INTENT_ENTRYPOINT_ARBITRUM_USDC_TO_BASE_USDC | Gasless USDC → USDC | 1. `depositToIntentWithPermit()` (gasless deposit)<br>2. `payFeeWithPermit()` (permit fee)<br>3. Relayer execution<br>4. `TrailsRouter.sweep()` (fees from allowance) | ERC-2612 permits, leftover allowance, relayer integration |
-| **Gasless (Cross-Chain)** | GASLESS_INTENT_ENTRYPOINT_ARBITRUM_USDC_TO_BASE_ETH | Gasless USDC → ETH | Same as above | Native ETH with gasless deposit |
-| **Gasless (Cross-Chain)** | GASLESS_CROSS_CHAIN_BASE_USDC_TO_ARBITRUM_ETH_NFT_MINT | Gasless USDC → ETH → NFT mint | 1. `depositToIntentWithPermit()`<br>2. `payFeeWithPermit()`<br>3. `TrailsRouter.injectAndCall()` (NFT mint)<br>4. Relayer sweep | Permit chaining, complex gasless execution |
-| **Gasless (w/ Calldata)** | GASLESS_INTENT_ENTRYPOINT_DEPOSIT_AAVE_BASE_USDC | Gasless Aave USDC deposit | 1. `depositToIntentWithPermit()`<br>2. `payFeeWithPermit()`<br>3. `TrailsRouter.injectAndCall()` (Aave supply)<br>4. Relayer sweep | Gasless DeFi integration |
-| **Gasless (w/ Calldata)** | GASLESS_INTENT_ENTRYPOINT_DEPOSIT_MORPHO_BASE_USDC | Gasless Morpho USDC deposit | Same as above | Gasless lending protocol |
-| **Gasless (w/ Calldata)** | GASLESS_INTENT_ENTRYPOINT_DEPOSIT_AAVE_BASE_ETH | Gasless Aave ETH deposit | 1. `depositToIntentWithPermit()` (USDC)<br>2. `payFeeWithPermit()`<br>3. `TrailsRouter.injectAndCall()` (ETH supply)<br>4. Relayer sweep | Gasless native ETH deposit |
-| **Gasless (w/ Calldata)** | GASLESS_INTENT_ENTRYPOINT_MINT_NFT_BASE_USDC | Gasless NFT mint with USDC | 1. `depositToIntentWithPermit()`<br>2. `payFeeWithPermit()`<br>3. `TrailsRouter.injectAndCall()` (NFT mint)<br>4. Relayer sweep | Gasless NFT integration |
-| **Gasless (EXACT_INPUT)** | GASLESS_INTENT_ENTRYPOINT_FUND_USDC_BASE_EXACT_INPUT | Gasless fund USDC exact input | Same as GASLESS_INTENT_ENTRYPOINT_ARBITRUM_USDC_TO_BASE_USDC | Exact input pricing, min/max bounds |
-| **Gasless (EXACT_INPUT)** | GASLESS_INTENT_ENTRYPOINT_FUND_USDC_TO_ETH_BASE_EXACT_INPUT | Gasless USDC → ETH exact input | Same as above | Exact input with native output |
-| **Gasless (EXACT_INPUT)** | GASLESS_INTENT_ENTRYPOINT_DEPOSIT_AAVE_EXACT_INPUT | Gasless Aave deposit exact input | 1. `depositToIntentWithPermit()`<br>2. `payFeeWithPermit()`<br>3. `TrailsRouter.injectAndCall()` (Aave deposit)<br>4. Relayer sweep | Exact input DeFi deposit |
-| **Failure (Unsupported Chains)** | CROSS_CHAIN_ORIGIN_CHAIN_NOT_SUPPORTED | Invalid origin chain ID (99999) | Quote fails, no execution | Chain validation, graceful error handling |
-| **Failure (Invalid Calldata)** | FAIL_CUSTOM_DESTINATION_CROSS_CHAIN | Invalid destination calldata (cross-chain) | 1. `TrailsIntentEntrypoint` (deposit succeeds)<br>2. `TrailsRouter.injectAndCall()` (reverts)<br>3. `refundAndSweep()` (user refund)<br>4. Sentinel NOT set | Revert bubbling, fallback semantics, refund logic |
-| **Failure (Invalid Calldata)** | FAIL_CUSTOM_ORIGIN_SAME_CHAIN_WITH_ETH | Invalid origin calldata (same-chain ETH) | 1. `TrailsIntentEntrypoint` (deposit succeeds)<br>2. `TrailsRouter.execute()` (reverts)<br>3. `refundAndSweep()` (full refund) | Origin failure handling, same-chain refunds |
-| **Failure (Invalid Calldata)** | FAIL_CUSTOM_ORIGIN_SAME_CHAIN_WITH_ERC20 | Invalid origin calldata (same-chain ERC20) | Same as above | ERC20-specific failure handling |
-| **EXACT_INPUT (Cross-Chain)** | ARBITRUM_USDC_FROM_BASE_ETH_EXACT_INPUT | Base ETH → Arbitrum USDC exact input | 1. `TrailsIntentEntrypoint` (ETH deposit)<br>2. `TrailsRouterShim` (swap + bridge)<br>3. `TrailsRouter` (USDC transfer) | Exact input pricing, slippage bounds |
-| **EXACT_INPUT (Cross-Chain)** | FUND_USDC_BASE_EXACT_INPUT | Arbitrum USDC → Base USDC exact input | Same as PAY_USDC_BASE but EXACT_INPUT | Input amount validation, funding scenarios |
-| **EXACT_INPUT (Cross-Chain)** | FUND_ETH_BASE_EXACT_INPUT | Arbitrum ETH → Base ETH exact input | 1. `TrailsIntentEntrypoint` (ETH deposit)<br>2. `TrailsRouterShim` (native bridge)<br>3. `TrailsRouter.sweep()` (ETH transfer) | Native exact input, gas optimization |
-| **EXACT_INPUT (Cross-Chain w/ Calldata)** | FUND_DEPOSIT_AAVE_BASE_USDC_EXACT_INPUT | Arbitrum USDC → Base USDC → Aave exact input | 1. `TrailsIntentEntrypoint`<br>2. `TrailsRouterShim` (bridge)<br>3. `TrailsRouter.injectAndCall()` (Aave deposit) | Exact input DeFi deposits |
-| **EXACT_INPUT (Cross-Chain w/ Calldata)** | FUND_DEPOSIT_AAVE_BASE_ETH_EXACT_INPUT | Arbitrum ETH → Base ETH → Aave exact input | 1. `TrailsIntentEntrypoint`<br>2. `TrailsRouterShim` (bridge)<br>3. `TrailsRouter.injectAndCall()` (Aave ETH supply) | Native exact input DeFi |
-| **EXACT_INPUT (Cross-Chain w/ Calldata)** | FUND_DEPOSIT_YEARN_KATANA_USDC_EXACT_INPUT | Arbitrum USDC → Katana USDC → Yearn exact input | Same as above | Yearn vault exact input |
-| **EXACT_INPUT (Cross-Chain w/ Calldata)** | DEPOSIT_AAVE_BASE_ETH_EXACT_INPUT | Arbitrum ETH → Base ETH → Aave exact input | Same as FUND_DEPOSIT_AAVE_BASE_ETH_EXACT_INPUT | Aave ETH supply exact input |
-| **EXACT_INPUT (Cross-Chain w/ Calldata)** | DEPOSIT_MORPHO_BASE_USDC_EXACT_INPUT | Arbitrum USDC → Base USDC → Morpho exact input | Same as FUND_DEPOSIT_AAVE_BASE_USDC_EXACT_INPUT | Morpho exact input |
+| Category | Description | Expected Contract Flow | Testing Focus |
+|----------|-------------|------------------------|---------------|
+| **Cross-Chain (ERC20 → Native)** | Basic cross-chain transfers from ERC20 tokens to native ETH without destination contract execution | 1. `TrailsIntentEntrypoint.depositToIntent()`<br>2. `TrailsRouterShim.execute()` (approval + bridge)<br>3. `TrailsRouter.validateOpHashAndSweep()`<br>4. `TrailsRouter.sweep()` (ETH transfer) | EIP-712 validation, token approvals, bridge integration, native ETH handling, conditional fee sweeping |
+| **Cross-Chain (Native → Native)** | Native ETH transfers across chains without destination contract execution | 1. `TrailsIntentEntrypoint` (ETH deposit)<br>2. `TrailsRouterShim` (native bridge)<br>3. `TrailsRouter.sweep()` (ETH transfer + gas refund) | Native ETH bridging, gas refunds, MEV protection |
+| **Cross-Chain (ERC20 → ERC20)** | Cross-chain ERC20 → ERC20 transfers for payment, funding, and receiving use cases | 1. `TrailsIntentEntrypoint` (USDC deposit)<br>2. `TrailsRouterShim` (approval + bridge)<br>3. `TrailsRouter` (ERC20 transfer)<br>4. `TrailsRouter.sweep()` (dust cleanup) | Provider integration, token decimals, slippage tolerance, recipient verification, gasless flow integration |
+| **Cross-Chain (ERC20 → Native w/ Calldata)** | Cross-chain transfers followed by native ETH contract execution on destination | 1. `TrailsIntentEntrypoint` (ERC20 deposit)<br>2. `TrailsRouterShim` (swap + bridge)<br>3. `TrailsRouter.injectAndCall()` (ETH injection)<br>4. `TrailsRouter.sweep()` (remaining ETH) | Balance injection, calldata surgery, value forwarding |
+| **Cross-Chain (Native → ERC20 w/ Calldata)** | Native ETH cross-chain transfers followed by ERC20 contract execution | 1. `TrailsIntentEntrypoint` (ETH deposit)<br>2. `TrailsRouterShim` (bridge + swap)<br>3. `TrailsRouter.injectAndCall()` (ERC20 approval + contract execution)<br>4. `TrailsRouter.validateOpHashAndSweep()` (multi-step fees) | Multi-step execution, ERC20 approvals, contract interaction, error bubbling |
+| **Cross-Chain (ERC20 → ERC20 w/ Calldata)** | Cross-chain ERC20 transfers followed by ERC20 contract execution (DeFi deposits, NFT minting) | 1. `TrailsIntentEntrypoint` (USDC deposit)<br>2. `TrailsRouterShim` (bridge)<br>3. `TrailsRouter.injectAndCall()` (ERC20 approval + contract execution)<br>4. `TrailsRouter.sweep()` (dust cleanup) | DeFi/NFT integration, ERC20 approvals, same-token execution, protocol-specific errors |
+| **Cross-Chain (Native → Native w/ Calldata)** | Native ETH cross-chain transfers followed by native contract execution | 1. `TrailsIntentEntrypoint` (ETH deposit)<br>2. `TrailsRouterShim` (bridge)<br>3. `TrailsRouter.injectAndCall()` (native contract execution)<br>4. `TrailsRouter.sweep()` (receipt tokens to user) | Native ETH injection, protocol integration, receipt token handling |
+| **Same-Chain (ERC20 → Native)** | Same-chain token swaps from ERC20 to native ETH | 1. `TrailsIntentEntrypoint` (USDC deposit)<br>2. `TrailsRouter.execute()` (DEX swap)<br>3. `TrailsRouter.sweep()` (ETH transfer + fees) | DEX integration, same-chain routing, token → native |
+| **Same-Chain (Native → ERC20)** | Same-chain swaps from native ETH to ERC20 tokens | 1. `TrailsIntentEntrypoint` (ETH deposit)<br>2. `TrailsRouter.execute()` (ETH → ERC20 swap)<br>3. `TrailsRouter.sweep()` (ERC20 transfer + gas refund) | Native → token conversion, gas refunds, slippage handling |
+| **Same-Chain (ERC20 → ERC20)** | Same-chain ERC20 ↔ ERC20 swaps | 1. `TrailsIntentEntrypoint` (ERC20 deposit)<br>2. `TrailsRouter.execute()` (ERC20 swap)<br>3. `TrailsRouter.sweep()` (ERC20 transfer) | ERC20 ↔ ERC20 swaps, wrapping mechanics, dust handling |
+| **Same-Chain (Native → Native)** | Same-chain ETH wrapping/unwrapping | 1. `TrailsIntentEntrypoint` (ETH deposit)<br>2. `TrailsRouter.execute()` (WETH deposit)<br>3. `TrailsRouter.sweep()` (WETH transfer) | ETH wrapping, native → wrapped token conversion |
+| **Same-Chain (w/ Calldata)** | Same-chain execution with contract calls (DeFi, NFT minting) | 1. `TrailsIntentEntrypoint` (token deposit)<br>2. `TrailsRouter.injectAndCall()` (swap + contract execution)<br>3. `TrailsRouter.sweep()` (position tokens to user) | Complex multicall, protocol integration, same-chain execution |
+| **Gasless (Cross-Chain)** | Gasless cross-chain execution using ERC20 tokens for gas fees | 1. `depositToIntentWithPermit()` (gasless deposit)<br>2. `payFeeWithPermit()` (permit fee)<br>3. Relayer execution<br>4. `TrailsRouter.sweep()` (fees from allowance) | ERC-2612 permits, leftover allowance handling, relayer integration |
+| **Gasless (w/ Calldata)** | Gasless execution with complex destination contract interactions | 1. `depositToIntentWithPermit()` (gasless deposit)<br>2. `payFeeWithPermit()` (permit fee)<br>3. `TrailsRouter.injectAndCall()` (contract execution)<br>4. Relayer sweep | Permit chaining, gasless contract calls, position security |
+| **Gasless (EXACT_INPUT)** | Gasless execution with exact input amounts for funding/earning use cases | Same as Gasless (Cross-Chain) but with EXACT_INPUT trade type | Exact input pricing, minimum/maximum bounds |
+| **Failure (Unsupported Chains)** | Chain validation and error handling for unsupported networks | Quote generation fails, no on-chain execution | Chain validation, graceful error handling, user protection |
+| **Failure (Invalid Calldata)** | Destination contract call failures and fallback mechanisms | 1. `TrailsIntentEntrypoint` (deposit succeeds)<br>2. `TrailsRouter.injectAndCall()` (reverts)<br>3. `refundAndSweep()` (user refund)<br>4. Sentinel NOT set | Revert bubbling, fallback semantics, refund logic, sentinel protection |
+| **EXACT_INPUT (Cross-Chain)** | Cross-chain transfers with exact input amounts | 1. `TrailsIntentEntrypoint` (token deposit)<br>2. `TrailsRouterShim` (swap + bridge)<br>3. `TrailsRouter` (token transfer) | Exact input pricing, slippage bounds, input amount validation |
 
 ### Running Scenarios
 
-Use environment variables to execute specific scenarios:
+Use environment variables to execute specific scenario categories:
 
 ```bash
-# Single scenario
-TEST_SCENARIOS="PAY_USDC_BASE" pnpm run test:scenarios
+# Run cross-chain basic scenarios
+TEST_SCENARIOS="cross-chain-basic" pnpm run test:scenarios
 
-# Multiple scenarios
-TEST_SCENARIOS="PAY_USDC_BASE,FUND_USDC_BASE" pnpm run test:scenarios
+# Run DeFi integration scenarios
+TEST_SCENARIOS="defi-integration" pnpm run test:scenarios
 
-# Category-based
-TEST_SCENARIOS="DEPOSIT_AAVE_*,MINT_NFT_*" pnpm run test:scenarios  # DeFi + NFT
-TEST_SCENARIOS="GASLESS_*" pnpm run test:scenarios  # Gasless flows
-TEST_SCENARIOS="FAIL_*" pnpm run test:scenarios  # Failure handling
+# Run gasless execution scenarios
+TEST_SCENARIOS="gasless-flows" pnpm run test:scenarios
 
-# All scenarios
+# Run failure handling scenarios
+TEST_SCENARIOS="failure-handling" pnpm run test:scenarios
+
+# Run all scenarios
 pnpm run test:scenarios
 ```
 
-**Expected Output**:
+**Expected Output Format**:
 ```
 📊 Test Results Summary
 Total scenarios: 42
 ✓ Successful: 38
-⏭ Skipped: 2
+⏭ Skipped: 2  
 ✗ Failed: 2
 
 📈 Successful scenarios:
-• PAY_USDC_BASE (cross-chain payment)
-• FUND_USDC_BASE (funding flow)
-• MINT_NFT_BASE_USDC (NFT minting)
+• Cross-chain payment (Arbitrum → Base)
+• Funding flow (Arbitrum → Base)  
+• NFT minting (Base → Arbitrum)
 
 📉 Failed scenarios:
-• FAIL_CUSTOM_DESTINATION_CROSS_CHAIN (expected - refund verified)
+• Destination failure (expected - refund verified)
+• Some test case (actual failure - investigate)
 
 🔗 Successful Tx URLs
-Test Case Name    Test Case ID    1st Tx                    2nd Tx                    3rd Tx
-PAY_USDC_BASE     PAY_USDC_BASE   https://arbiscan...       https://basescan...       -
+Test Case Name              Test Case ID    1st Tx                    2nd Tx                    3rd Tx
+Cross-chain payment         cross-chain     https://arbiscan...       https://basescan...       -
 ```
 
 ### Validation Checklist
 
-For each scenario, verify:
+For each scenario execution, validate:
 
 - **Contract Invariants**: Delegatecall enforcement, sentinel validation, fee protection
 - **Economic Security**: No unauthorized losses, proper refunds on failure
