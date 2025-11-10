@@ -50,8 +50,8 @@ Create `.env` file with your test configuration:
 # Wallet configuration
 TEST_PRIVATE_KEY=0x1234567890abcdef...  # Your test wallet private key
 
-# API configuration
-TRAILS_API_KEY=<FILL_IN_BLANK/>  # Request from project team
+# API configuration, this is the provided key for this project
+TRAILS_API_KEY=AQAAAAAAAKhGXCBjAB-s9bSY3C3N7rPGSZI 
 
 # RPC endpoints (optional - uses public defaults)
 ARBITRUM_RPC_URL=https://arb1.arbitrum.io/rpc
