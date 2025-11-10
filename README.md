@@ -36,7 +36,16 @@ _Anything included in this section is considered a publicly known issue and is t
 
 # Overview
 
-[ ⭐️ Sequence team: add info here ]
+Multichain transaction rails to pay, swap, fund, or earn in 1-click with any wallet, token or chain - powered by intents.
+
+## Summary
+
+Trails is a chain abstraction orchestration protocol that enables 1-click transactions from any wallet seamlessly with unified user liquidity across all chains. In contrast to typical cross-chain solutions, Trails sources liquidity and aggregates all user balances for every token across every chain in a user’s wallet as options for any transaction on a destination chain. Trails is architected as a trustless system that works on top of existing bridging, filler, or solver infrastructure. Trails is free to integrate and is optimized for a variety of use cases, for example:
+
+- **Pay**: Enable cross-chain, 1-click payments with any token for ecommerce platforms, NFT marketplaces, real-world asset purchases, and minimal-slippage stablecoin transactions.
+- **Swap**: Embed low-latency, highly liquid cross-chain token swaps for your applications.
+- **Fund**: Maximize TVL and transaction velocity through fully brandable funding widgets for protocol deposits such as perpetual exchanges, chain deposits, and liquidity provisioning.
+- **Earn**: Streamline DeFi yield opportunities by enabling deposits into tokenized vaults, lending pools, and yield strategies from any token on any chain
 
 ## Links
 
@@ -49,62 +58,32 @@ _Anything included in this section is considered a publicly known issue and is t
 
 # Scope
 
-*See [scope.txt](https://github.com/code-423n4/2025-11-sequence/blob/main/scope.txt)*
-
 ### Files in scope
 
-| File                                        | nSLOC | Libraries used |
-|---------------------------------------------|-------|--------------------------------------------------------|
-| `/src/TrailsIntentEntrypoint.sol` | 101   | @openzeppelin/contracts/token/ERC20/IERC20.sol; @openzeppelin/contracts/token/ERC20/extensions/IERC20Permit.sol; @openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol; @openzeppelin/contracts/utils/cryptography/ECDSA.sol; @openzeppelin/contracts/utils/ReentrancyGuard.sol |
-| `/src/TrailsRouter.sol  ` | 236   | @openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol; @openzeppelin/contracts/token/ERC20/IERC20.sol; wallet-contracts-v3/modules/interfaces/IDelegatedExtension.sol; tstorish/Tstorish.sol |
-| `/src/TrailsRouterShim.sol` | 30    | tstorish/Tstorish.sol |
-| `/src/guards/DelegatecallGuard.sol` | 12    | |
-| `/src/interfaces/IMulticall3.sol` | 18    | |
-| `/src/interfaces/ITrailsIntentEntrypoint.sol` | 5     | |
-| `/src/interfaces/ITrailsRouter.sol` | 25    | wallet-contracts-v3/modules/interfaces/IDelegatedExtension.sol` |
-| `/src/interfaces/ITrailsRouterShim.sol` | 4     | wallet-contracts-v3/modules/interfaces/IDelegatedExtension.sol` |
-| `/src/libraries/TrailsSentinelLib.sol` | 13    | |
+| File                                        | nSLOC | 
+|---------------------------------------------|-------|
+| [src/TrailsIntentEntrypoint.sol](https://github.com/code-423n4/2025-11-sequence/blob/main/src/TrailsIntentEntrypoint.sol) | 101   | 
+| [src/TrailsRouter.sol](https://github.com/code-423n4/2025-11-sequence/blob/main/src/TrailsRouter.sol) | 236   | 
+| [src/TrailsRouterShim.sol](https://github.com/code-423n4/2025-11-sequence/blob/main/src/TrailsRouterShim.sol) | 30    |
+| [src/guards/DelegatecallGuard.sol](https://github.com/code-423n4/2025-11-sequence/blob/main/src/guards/DelegatecallGuard.sol) | 12    |
+| [src/interfaces/IMulticall3.sol](https://github.com/code-423n4/2025-11-sequence/blob/main/src/interfaces/IMulticall3.sol) | 18    |
+| [src/interfaces/ITrailsIntentEntrypoint.sol](https://github.com/code-423n4/2025-11-sequence/blob/main/src/interfaces/ITrailsIntentEntrypoint.sol) | 5     |
+| [src/interfaces/ITrailsRouter.sol](https://github.com/code-423n4/2025-11-sequence/blob/main/src/interfaces/ITrailsRouter.sol) | 25    | 
+| [src/interfaces/ITrailsRouterShim.sol](https://github.com/code-423n4/2025-11-sequence/blob/main/src/interfaces/ITrailsRouterShim.sol) | 4     |
+| [src/libraries/TrailsSentinelLib.sol](https://github.com/code-423n4/2025-11-sequence/blob/main/src/libraries/TrailsSentinelLib.sol) | 13    |
+
+*For a machine-readable version, see [scope.txt](https://github.com/code-423n4/2025-11-sequence/blob/main/scope.txt)*
 
 ### Files out of scope
-
-*See [out_of_scope.txt](https://github.com/code-423n4/2025-11-sequence/blob/main/out_of_scope.txt)*
 
 | File         |
 | ------------ |
-| ./script/TrailsIntentEntrypoint.s.sol |
-| ./script/TrailsRouter.s.sol |
-| ./script/TrailsRouterShim.s.sol |
-| ./test/TrailsIntentEntrypoint.t.sol |
-| ./test/TrailsRouter.t.sol |
-| ./test/TrailsRouterShim.t.sol |
-| ./test/guards/DelegatecallGuard.t.sol |
-| ./test/libraries/TrailsSentinelLib.t.sol |
-| ./test/mocks/MockERC20.sol |
-| ./test/mocks/MockMulticall3.sol |
-| ./test/mocks/MockNonStandardERC20.sol |
-| ./test/mocks/MockSenderGetter.sol |
-| ./test/script/TrailsIntentEntrypoint.s.t.sol |
-| ./test/script/TrailsRouter.s.t.sol |
-| ./test/script/TrailsRouterShim.s.t.sol |
-| ./test/utils/Create2Utils.sol |
-| ./test/utils/TstoreUtils.sol |
-| Totals: 17 |
+| [script/\*\*.\*\*](https://github.com/code-423n4/2025-11-sequence/tree/main/script) |
+| [test/\*\*.\*\*](https://github.com/code-423n4/2025-11-sequence/tree/main/test) |
+| Total Files: 17 |
 
 
-
-### Files in scope
-- ✅ This should be completed using the `metrics.md` file
-- ✅ Last row of the table should be Total: SLOC
-- ✅ SCOUTS: Have the sponsor review and and confirm in text the details in the section titled "Scoping Q amp; A"
-
-*For sponsors that don't use the scoping tool: list all files in scope in the table below (along with hyperlinks) -- and feel free to add notes to emphasize areas of focus.*
-
-| Contract | SLOC | Purpose | Libraries used |  
-| ----------- | ----------- | ----------- | ----------- |
-| [contracts/folder/sample.sol](https://github.com/code-423n4/repo-name/blob/contracts/folder/sample.sol) | 123 | This contract does XYZ | [`@openzeppelin/*`](https://openzeppelin.com/contracts/) |
-
-### Files out of scope
-✅ SCOUTS: List files/directories out of scope
+*For a machine-readable version, see [out_of_scope.txt](https://github.com/code-423n4/2025-11-sequence/blob/main/out_of_scope.txt)*
 
 # Additional context
 
@@ -131,8 +110,6 @@ _Anything included in this section is considered a publicly known issue and is t
 
 ### F. Cross‑chain assumptions
 - **Non‑atomicity & monitoring.** Origin/destination legs are decoupled by bridges/relayers. Stress timing windows, reorgs around proofing, dust handling, token decimal mismatches, and MEV on destination protocol interactions (especially with balance injection).
-
-✅ SCOUTS: Please format the response above 👆 so its not a wall of text and its readable.
 
 ## Main invariants
 
@@ -170,40 +147,40 @@ _Anything included in this section is considered a publicly known issue and is t
 
 *(`TrailsRouter` / `TrailsRouterShim` execute under Sequence v3 wallet authority via `delegatecall`; there’s no standalone admin role on these stateless extensions.)*
 
-✅ SCOUTS: Please format the response above 👆 using the template below👇
-
-| Role                                | Description                       |
-| --------------------------------------- | ---------------------------- |
-| Owner                          | Has superpowers                |
-| Administrator                             | Can change fees                       |
-
-✅ SCOUTS: Please format the response above 👆 so its not a wall of text and its readable.
-
 ## Running tests
 
-forge install
-forge build
+### Prerequisites
+
+The repository utilizes the `foundry` (`forge`) toolkit to compile its contracts, and contains several dependencies through `foundry` that will be automatically installed whenever a `forge` command is issued.
+
+The compilation instructions were evaluated with the following toolkit versions:
+
+- forge: `1.3.5-stable`
+
+### Tests
+
+This command can be issued to execute any tests within the repository:
+
+```sh
 forge test
+``` 
 
-✅ SCOUTS: Please format the response above 👆 using the template below👇
+### Submission PoCs
 
-```bash
-git clone https://github.com/code-423n4/2023-08-arbitrum
-git submodule update --init --recursive
-cd governance
-foundryup
-make install
-make build
-make sc-election-test
-```
-To run code coverage
-```bash
-make coverage
-```
+The scope of the audit contest involves three distinct contracts, each with its dedicated `**.t.sol` test file.
 
-✅ SCOUTS: Add a screenshot of your terminal showing the test coverage
+Wardens are instructed to utilize the respective test suite of the existing ones to illustrate the vulnerabilities they identify, should they be constrained to a single file (i.e. `TrailsIntentEntrypoint` vulnerabilities should utilize the `TrailsIntentEntrypoint.t.sol` file).
+
+If a custom configuration is desired, wardens are advised to create their own PoC file that should be executable within the `test` subfolder of this contest.
+
+All PoCs must adhere to the following guidelines:
+
+- The PoC should execute successfully
+- The PoC must not mock any contract-initiated calls
+- The PoC must not utilize any mock contracts in place of actual in-scope implementations
 
 ## Miscellaneous
+
 Employees of Sequence and employees' family members are ineligible to participate in this audit.
 
 Code4rena's rules cannot be overridden by the contents of this README. In case of doubt, please check with C4 staff.
