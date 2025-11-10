@@ -40,7 +40,7 @@ Multichain transaction rails to pay, swap, fund, or earn in 1-click with any wal
 
 ## Summary
 
-Trails is a chain abstraction orchestration protocol that enables 1-click transactions from any wallet seamlessly with unified user liquidity across all chains. In contrast to typical cross-chain solutions, Trails sources liquidity and aggregates all user balances for every token across every chain in a user’s wallet as options for any transaction on a destination chain. Trails is architected as a trustless system that works on top of existing bridging, filler, or solver infrastructure. Trails is free to integrate and is optimized for a variety of use cases, for example:
+This transaction rails module is a chain abstraction orchestration protocol that enables 1-click transactions from any wallet seamlessly with unified user liquidity across all chains. In contrast to typical cross-chain solutions, it sources liquidity and aggregates all user balances for every token across every chain in a user’s wallet as options for any transaction on a destination chain. The module is architected as a trustless system that works on top of existing bridging, filler, or solver infrastructure. It is free to integrate and is optimized for a variety of use cases, for example:
 
 - **Pay**: Enable cross-chain, 1-click payments with any token for ecommerce platforms, NFT marketplaces, real-world asset purchases, and minimal-slippage stablecoin transactions.
 - **Swap**: Embed low-latency, highly liquid cross-chain token swaps for your applications.
