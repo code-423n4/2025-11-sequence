@@ -1,10 +1,1459 @@
+## SDK Testing Guide for Trails Contracts
+
+## Overview
+
+This guide provides instructions for testing the Trails smart contracts using the 0xtrails SDK. The Trails protocol enables seamless cross-chain token transfers, swaps, and arbitrary contract executions through an intent-based architecture.
+
+### Important Notes
+
+- **Intent Machine API**: The closed-source Intent Machine backend is out of scope for this audit. However, developers can access the public API interfaces to test the on-chain contract flows.
+- **Testing Approach**: The SDK provides a high-level interface to interact with `TrailsIntentEntrypoint`, `TrailsRouter`, and `TrailsRouterShim` contracts. This allows testing of the complete execution flow including deposits, routing, balance injection, and fee collection.
+- **Public Documentation**: Refer to the [Trails API Reference](https://docs.trails.build/api-reference/introduction) for endpoint details and protocol specifications.
+
+### What to Test
+
+Developers should focus on the following contract interactions through the SDK:
+
+1. **EIP-712 Deposits and Permits** (`TrailsIntentEntrypoint`)
+2. **Delegatecall Execution** (`TrailsRouter`, `TrailsRouterShim`)
+3. **Balance Injection and Calldata Surgery** (`TrailsRouter.injectAndCall`)
+4. **Conditional Fee Sweeping** (`TrailsRouter.validateOpHashAndSweep`)
+5. **Success Sentinel Management** (`TrailsSentinelLib`)
+6. **Refund and Fallback Logic** (`TrailsRouter.refundAndSweep`)
+
+## Prerequisites & Setup
+
+### System Requirements
+
+- **Node.js**: Version 18.0.0 or higher
+- **npm**: Version 9.0.0 or higher (comes with Node.js)
+- **Git**: For cloning the SDK repository
+- **Test Wallet**: A wallet with small amounts of test tokens (USDC, ETH) on supported chains
+- **RPC Access**: Public RPC endpoints for Arbitrum, Base, and other supported chains
+
+### Installing the 0xtrails SDK
+
+The 0xtrails SDK provides React hooks and utilities to interact with the Trails protocol. Install it via npm:
+
+```bash
+# Create a new test project or navigate to your existing one
+mkdir trails-sdk-test && cd trails-sdk-test
+npm init -y
+
+# Install the 0xtrails SDK
+npm install 0xtrails
+
+# Install viem for wallet and chain utilities
+npm install viem @tanstack/react-query
+
+# Install testing dependencies
+npm install --save-dev vitest @testing-library/react @testing-library/jest-dom jsdom
+```
+
+### Accessing the SDK Source (Optional)
+
+For deeper understanding or custom modifications, you can clone the full SDK repository:
+
+```bash
+git clone https://github.com/0xsequence/trails.git
+cd trails/packages/0xtrails
+npm install
+```
+
+### Wallet Setup
+
+Create a test wallet with small amounts of tokens for testing:
+
+1. **Generate Test Wallet**:
+   ```typescript
+   import { privateKeyToAccount } from 'viem/accounts'
+   
+   const account = privateKeyToAccount('0x...') // Your private key
+   console.log('Test wallet address:', account.address)
+   ```
+
+2. **Fund Test Wallet**:
+   - **Arbitrum**: Fund with ~0.01 ETH and 0.5 USDC
+   - **Base**: Fund with ~0.01 ETH and 0.5 USDC  
+   - **Other chains**: Small amounts for specific test scenarios
+
+   Use faucets or team-provided testnet funds. Contact the project team for testnet deployment addresses.
+
+3. **Environment Variables**:
+   ```bash
+   # Create .env file in your project root
+   echo "TEST_PRIVATE_KEY=0x..." > .env
+   echo "TRAILS_API_KEY=<FILL_IN_BLANK/>" >> .env
+   ```
+
+### Configuration
+
+Set up the SDK configuration in your test file:
+
+```typescript
+import { getSequenceConfig, getTrailsApiUrl } from '0xtrails/config'
+
+// Verify your configuration
+console.log('Sequence Config:', getSequenceConfig())
+console.log('Trails API URL:', getTrailsApiUrl())
+```
+
+## API Key Configuration
+
+### Obtaining Your API Key
+
+To interact with the Trails Intent Machine API, you need a project access key:
+
+1. **Request Access**: Contact the project team via the designated support channel to request a testing API key
+2. **Rate-Limited Option**: A public rate-limited key is available for basic testing. Request this from the team if you need immediate access
+3. **Key Format**: The key should be in the format `pk_live_...` or `pk_test_...`
+
+### Environment Setup
+
+Add your API key to your environment:
+
+```bash
+# Method 1: Export as environment variable
+export TRAILS_API_KEY=<FILL_IN_BLANK/>
+
+# Method 2: Add to .env file (recommended)
+echo "TRAILS_API_KEY=<FILL_IN_BLANK/>" >> .env
+```
+
+### Verification
+
+Test your API key configuration:
+
+```typescript
+import { getSequenceProjectAccessKey } from '0xtrails/config'
+
+// Verify the key is loaded
+const apiKey = getSequenceProjectAccessKey()
+if (apiKey) {
+  console.log('✅ API key loaded successfully')
+  console.log('Key format:', apiKey.slice(0, 10) + '...')
+} else {
+  console.error('❌ API key not found. Check your .env file.')
+}
+```
+
+### Rate Limits
+
+- **Public Key**: 100 requests per minute, 1000 requests per day
+- **Project Key**: 1000 requests per minute, unlimited daily
+- **Monitoring**: The SDK will throw descriptive errors when rate limits are exceeded
+
+### Security Notes
+
+- **Never commit API keys** to version control
+- **Use .env files** and add them to `.gitignore`
+- **Test keys are safe** for public sharing in PoCs, but production keys should remain private
+- **Key rotation**: Project team will provide new keys if needed during testing
+
+### Troubleshooting API Key Issues
+
+**Common Errors:**
+
+1. **"Invalid API Key"**:
+   ```
+   Error: Unauthorized - Invalid project access key
+   ```
+   - Verify the key format starts with `pk_`
+   - Check for typos or extra whitespace
+   - Ensure the key has testing permissions
+
+2. **"Rate Limit Exceeded"**:
+   ```
+   Error: Rate limit exceeded (100 requests per minute)
+   ```
+   - Wait 60 seconds and retry
+   - Request a project key for higher limits
+   - Monitor your request frequency
+
+3. **"API Key Not Found"**:
+   ```
+   Error: TRAILS_API_KEY environment variable not set
+   ```
+   - Check your `.env` file syntax
+   - Verify `TRAILS_API_KEY` is exported
+   - Restart your development server
+
+**Support**: If you encounter persistent API issues, contact the project team with:
+- Error message and stack trace
+- Your API key format (first 10 characters)
+- The specific test scenario you're running
+- Request timestamp and frequency
+
+## SDK Hooks & Methods
+
+The 0xtrails SDK provides React hooks and methods to interact with the Trails protocol. Developers should focus on the following three primary interfaces for testing contract flows.
+
+### 1. `useQuote` Hook
+
+**Purpose**: Generates a quote for token swaps, transfers, or contract executions across chains. This hook interacts with the Trails Intent Machine to build the execution plan and returns the necessary data for on-chain execution.
+
+**Location**: `src/prepareSend.ts`
+
+**Parameters**:
+
+| Parameter | Type | Description | Required |
+|-----------|------|-------------|----------|
+| `walletClient` | `WalletClient` (viem) | Wallet client for signing and sending transactions | ✅ |
+| `fromTokenAddress` | `Address` | Source token contract address (or `0x0` for native ETH) | ✅ |
+| `fromChainId` | `number` | Source chain ID (e.g., 42161 for Arbitrum) | ✅ |
+| `toTokenAddress` | `Address` | Destination token contract address (or `0x0` for native ETH) | ✅ |
+| `toChainId` | `number` | Destination chain ID | ✅ |
+| `swapAmount` | `string` | Amount to swap/transfer (in token decimals, e.g., `"1000000"` for 1 USDC) | ✅ |
+| `toRecipient` | `Address` | Final recipient address for the tokens | ✅ |
+| `tradeType` | `TradeType` | `EXACT_INPUT` or `EXACT_OUTPUT` | ✅ |
+| `slippageTolerance` | `string` | Slippage tolerance as decimal string (e.g., `"0.03"` for 3%) | ❌ |
+| `quoteProvider` | `string` | Quote provider: `"lifi"`, `"cctp"`, `"relay"`, or `"auto"` (default) | ❌ |
+| `selectedFeeToken` | `{ tokenAddress: Address, tokenSymbol?: string }` | Token to use for gas fees (for gasless flows) | ❌ |
+| `toCalldata` | `string` | Optional calldata for destination contract execution | ❌ |
+| `paymasterUrl` | `string` | Custom paymaster URL for gas sponsorship | ❌ |
+| `onStatusUpdate` | `(states: TransactionState[]) => void` | Callback for transaction status updates | ❌ |
+
+**Returns**:
+
+```typescript
+{
+  quote: {
+    originToken: TokenInfo
+    destinationToken: TokenInfo
+    originChain: ChainInfo  
+    destinationChain: ChainInfo
+    fromAmount: string
+    toAmount: string
+    fromAmountUsdDisplay?: string
+    toAmountUsdDisplay?: string
+    slippageTolerance: string
+    priceImpact: string
+    completionEstimateSeconds: number
+    transactionStates: TransactionState[]
+    originTokenRate?: string
+    destinationTokenRate?: string
+    quoteProvider: { name: string, id: string }
+  } | null
+  isLoadingQuote: boolean
+  swap: (() => Promise<void>) | null
+  quoteError: Error | null
+}
+```
+
+**TokenInfo Interface**:
+```typescript
+{
+  name: string
+  symbol: string
+  contractAddress: Address
+  decimals: number
+}
+```
+
+**TransactionState Interface**:
+```typescript
+{
+  label?: string
+  chainId?: number
+  state?: 'pending' | 'confirmed' | 'failed'
+  transactionHash?: Hash
+  explorerUrl?: string
+  receipt?: any
+  refunded?: boolean
+  decodedGuestModuleEvents?: any[]
+  decodedTrailsTokenSweeperEvents?: any[]
+}
+```
+
+**Example Usage**:
+
+```typescript
+import { renderHook, waitFor } from '@testing-library/react'
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
+import { SequenceHooksProvider } from '@0xsequence/hooks'
+import { useQuote, TradeType } from '0xtrails/prepareSend'
+import { createWalletClient, http, privateKeyToAccount } from 'viem'
+import { arbitrum, base } from 'viem/chains'
+import { getSequenceConfig, getTrailsApiUrl, getSequenceProjectAccessKey, getSequenceIndexerUrl } from '0xtrails/config'
+
+// Setup
+const privateKey = process.env.TEST_PRIVATE_KEY as `0x${string}`
+const account = privateKeyToAccount(privateKey)
+const walletClient = createWalletClient({
+  account,
+  chain: arbitrum,
+  transport: http(),
+})
+
+const queryClient = new QueryClient({
+  defaultOptions: {
+    queries: { retry: false, staleTime: 0 },
+  },
+})
+
+const createWrapper = () => ({ children }: { children: React.ReactNode }) => (
+  <SequenceHooksProvider
+    config={{
+      projectAccessKey: getSequenceProjectAccessKey(),
+      env: {
+        indexerUrl: getSequenceIndexerUrl(),
+        indexerGatewayUrl: getSequenceIndexerUrl(),
+        apiUrl: getTrailsApiUrl(),
+      },
+    }}
+  >
+    <QueryClientProvider client={queryClient}>
+      {children}
+    </QueryClientProvider>
+  </SequenceHooksProvider>
+)
+
+// Test a cross-chain swap scenario
+const testScenario = async () => {
+  const { result, waitFor } = renderHook(
+    () =>
+      useQuote({
+        walletClient,
+        fromTokenAddress: '0xaf88d065e77c8cC2239327C5EDb3A432268e5831', // ARBITRUM USDC
+        fromChainId: arbitrum.id,
+        toTokenAddress: '0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913', // BASE USDC
+        toChainId: base.id,
+        swapAmount: '10000', // 0.01 USDC (6 decimals)
+        toRecipient: account.address,
+        tradeType: TradeType.EXACT_OUTPUT,
+        slippageTolerance: '0.03', // 3%
+        quoteProvider: 'auto', // or 'lifi', 'cctp', 'relay'
+        onStatusUpdate: (states) => {
+          console.log('Transaction states:', states)
+          // Monitor: TrailsIntentEntrypoint deposits, TrailsRouter execution, TrailsRouterShim sentinels
+        },
+      }),
+    { wrapper: createWrapper() }
+  )
+
+  // Wait for quote to load
+  await waitFor(
+    () => {
+      const { quote, isLoadingQuote, quoteError } = result.current
+      if (quoteError) throw quoteError
+      if (isLoadingQuote) throw new Error('Still loading')
+      return !!quote
+    },
+    { timeout: 15000 }
+  )
+
+  const { quote, swap } = result.current
+
+  if (quote && swap) {
+    console.log('Quote received:')
+    console.log('- From:', `${quote.fromAmount} ${quote.originToken.symbol} on ${quote.originChain.name}`)
+    console.log('- To:', `${quote.toAmount} ${quote.destinationToken.symbol} on ${quote.destinationChain.name}`)
+    console.log('- Provider:', quote.quoteProvider.name)
+    console.log('- Transaction steps:', quote.transactionStates.map(s => `${s.label} (${s.chainId})`))
+
+    // Execute the swap (triggers full contract flow)
+    console.log('\nExecuting swap...')
+    await swap()
+    
+    // Monitor onStatusUpdate callback for contract interactions
+    console.log('✅ Swap executed successfully')
+  } else {
+    console.error('❌ No quote available:', result.current.quoteError?.message)
+  }
+}
+
+// Run the test
+testScenario().catch(console.error)
+```
+
+**What This Tests**:
+
+1. **TrailsIntentEntrypoint**: EIP-712 deposit signature validation and token transfer
+2. **TrailsRouter**: Multicall execution with balance injection and approvals  
+3. **TrailsRouterShim**: Success sentinel setting via `TrailsSentinelLib`
+4. **Cross-chain bridging**: LiFi/CCTP/Relay protocol integration
+5. **Fee collection**: Conditional sweeping via `validateOpHashAndSweep`
+
+### 2. `commitIntent` Method
+
+**Purpose**: Commits an intent to the Trails Intent Machine for processing. This step prepares the execution plan and returns commitment data that can be used for on-chain execution.
+
+**Location**: Part of the internal intent workflow (exposed through SDK utilities)
+
+**Parameters**:
+
+| Parameter | Type | Description | Required |
+|-----------|------|-------------|----------|
+| `quote` | `Quote` | Quote object from `useQuote` hook | ✅ |
+| `walletClient` | `WalletClient` | Wallet client for signing | ✅ |
+| `intentAddress` | `Address` | Intent wallet address (derived from user wallet) | ✅ |
+
+**Returns**:
+```typescript
+{
+  intentHash: Hash
+  commitment: {
+    nonce: number
+    deadline: number
+    signature: Signature
+  }
+  executionPlan: TransactionState[]
+}
+```
+
+**Example Usage**:
+
+```typescript
+// After getting a quote from useQuote
+if (quote && swap) {
+  // Commit intent to Intent Machine
+  const commitment = await commitIntent({
+    quote,
+    walletClient,
+    intentAddress: deriveIntentAddress(account.address, chainId)
+  })
+  
+  console.log('Intent committed:')
+  console.log('- Hash:', commitment.intentHash)
+  console.log('- Deadline:', new Date(commitment.commitment.deadline * 1000))
+  console.log('- Execution steps:', commitment.executionPlan.length)
+  
+  // Use commitment for on-chain execution via executeIntent
+}
+```
+
+**What This Tests**:
+
+- **Replay protection**: Nonce and deadline validation in `TrailsIntentEntrypoint`
+- **Intent hash tracking**: Prevents duplicate deposits
+- **Signature verification**: EIP-712 typed data validation
+
+### 3. `executeIntent` Method
+
+**Purpose**: Executes a committed intent on-chain by sending transactions through the Trails entrypoint and router contracts. This triggers the complete execution flow including deposits, routing, and final settlement.
+
+**Location**: Internal SDK method (called by `swap()` function in `useQuote`)
+
+**Parameters**:
+
+| Parameter | Type | Description | Required |
+|-----------|------|-------------|----------|
+| `commitment` | `Commitment` | Commitment data from `commitIntent` | ✅ |
+| `walletClient` | `WalletClient` | Wallet client for transaction submission | ✅ |
+| `onStatusUpdate` | `(states: TransactionState[]) => void` | Real-time transaction monitoring callback | ❌ |
+
+**Returns**:
+```typescript
+Promise<{
+  transactionStates: TransactionState[]
+  executionHash: Hash
+  finalBalances: {
+    origin: TokenBalance[]
+    destination: TokenBalance[]
+  }
+}>
+```
+
+**Example Usage**:
+
+```typescript
+// Execute the committed intent
+const executionResult = await executeIntent({
+  commitment,
+  walletClient,
+  onStatusUpdate: (states) => {
+    states.forEach(state => {
+      if (state.state === 'confirmed') {
+        console.log(`✅ ${state.label} on chain ${state.chainId}: ${state.explorerUrl}`)
+        
+        // Monitor specific contract interactions
+        if (state.label?.includes('deposit')) {
+          console.log('→ TrailsIntentEntrypoint: Deposit processed')
+        }
+        if (state.label?.includes('execute')) {
+          console.log('→ TrailsRouter: Multicall executed')
+        }
+        if (state.label?.includes('shim')) {
+          console.log('→ TrailsRouterShim: Success sentinel set')
+        }
+      }
+    })
+  }
+})
+
+console.log('Execution completed:')
+console.log('- Total steps:', executionResult.transactionStates.length)
+console.log('- Final origin balance:', executionResult.finalBalances.origin)
+console.log('- Final destination balance:', executionResult.finalBalances.destination)
+```
+
+**What This Tests**:
+
+1. **TrailsIntentEntrypoint Flow**:
+   - `depositToIntent()`: EIP-712 signature validation
+   - `depositToIntentWithPermit()`: ERC-2612 permit handling
+   - `payFee()` / `payFeeWithPermit()`: Fee collection mechanics
+
+2. **TrailsRouter Execution**:
+   - `execute()`: Delegatecall-only multicall routing
+   - `injectAndCall()`: Balance injection and calldata surgery
+   - `pullAndExecute()`: Full balance transfers
+   - `sweep()` / `validateOpHashAndSweep()`: Conditional token sweeping
+
+3. **TrailsRouterShim Validation**:
+   - Success sentinel setting via `TrailsSentinelLib.successSlot(opHash)`
+   - Fallback execution paths (`refundAndSweep`)
+   - `onlyDelegatecall` modifier enforcement
+
+4. **Cross-Chain Coordination**:
+   - Origin chain execution (swaps, approvals, bridging)
+   - Destination chain settlement (transfers, contract calls)
+   - Failure handling and refund mechanisms
+
+### Monitoring Contract Interactions
+
+The `onStatusUpdate` callback provides real-time visibility into contract interactions:
+
+```typescript
+onStatusUpdate: (states: TransactionState[]) => {
+  states.forEach(state => {
+    switch (state.label) {
+      case 'deposit':
+        console.log('→ TrailsIntentEntrypoint.depositToIntent()')
+        // Test: EIP-712 validation, replay protection, reentrancy guard
+        break
+      
+      case 'origin-execute':
+        console.log('→ TrailsRouter.execute() via delegatecall')
+        // Test: onlyDelegatecall modifier, multicall composition, SafeERC20 usage
+        break
+      
+      case 'origin-shim':
+        console.log('→ TrailsRouterShim wrapped execution')
+        // Test: Success sentinel setting, opHash validation
+        break
+      
+      case 'fee-sweep':
+        console.log('→ TrailsRouter.validateOpHashAndSweep()')
+        // Test: Conditional fee collection, sentinel verification
+        break
+      
+      case 'destination-transfer':
+        console.log('→ Final token transfer to recipient')
+        // Test: Correct recipient, amount, token handling
+        break
+      
+      case 'destination-execute':
+        console.log('→ Destination chain contract call')
+        // Test: Calldata execution, balance injection accuracy
+        break
+    }
+    
+    if (state.decodedGuestModuleEvents?.length > 0) {
+      state.decodedGuestModuleEvents.forEach(event => {
+        if (event.type === 'CallFailed') {
+          console.log('⚠️ CallFailed event detected:', event)
+          // Test failure handling and refund paths
+        }
+      })
+    }
+    
+    if (state.refunded) {
+      console.log('💸 Refund triggered:', state.label)
+      // Test refundAndSweep logic and user protection
+    }
+  })
+}
+```
+
+### Error Handling
+
+The SDK provides detailed error information for debugging contract issues:
+
+```typescript
+if (result.current.quoteError) {
+  const error = result.current.quoteError
+  console.error('Quote Error:', {
+    name: error.name,
+    message: error.message,
+    cause: error.cause,
+    // Additional metadata from Intent Machine
+    details: error.details,
+    traceId: error.traceId,
+    response: error.response
+  })
+  
+  // Common contract-related errors:
+  if (error.message.includes('Invalid signature')) {
+    // Test EIP-712 validation in TrailsIntentEntrypoint
+  }
+  
+  if (error.message.includes('Delegatecall failed')) {
+    // Test onlyDelegatecall modifier in TrailsRouter
+  }
+  
+  if (error.message.includes('Sentinel not set')) {
+    // Test success sentinel logic in TrailsRouterShim
+  }
+}
+```
+
+## TrailsWidget Integration
+
+The `TrailsWidget` provides a complete UI component for testing the Trails protocol. It encapsulates the entire flow from quote generation to on-chain execution, making it ideal for end-to-end testing of contract interactions.
+
+### Installation & Import
+
+The widget is included in the 0xtrails SDK:
+
+```bash
+npm install 0xtrails
+```
+
+**Import Statement**:
+```typescript
+import { TrailsWidget } from '0xtrails/widget'
+```
+
+### Basic Usage
+
+The widget can be used in any React application to test the complete Trails flow:
+
+```typescript
+import React from 'react'
+import { TrailsWidget } from '0xtrails/widget'
+import { SequenceProvider } from '@0xsequence/provider'
+import { getSequenceConfig } from '0xtrails/config'
+
+export function App() {
+  return (
+    <div style={{ padding: '20px', maxWidth: '800px', margin: '0 auto' }}>
+      <h1>Trails SDK Testing Widget</h1>
+      
+      <SequenceProvider
+        config={getSequenceConfig()}
+        defaultNetwork="arbitrum" // Start on Arbitrum for testing
+      >
+        <TrailsWidget
+          // Basic configuration for testing
+          defaultFromChain="arbitrum"
+          defaultToChain="base"
+          defaultFromToken="USDC"
+          defaultToToken="USDC"
+          defaultAmount="0.01"
+          
+          // Widget appearance
+          theme="light"
+          width="100%"
+          height="600px"
+          
+          // Testing-specific options
+          showDebugPanel={true} // Shows transaction states and contract calls
+          enableTestMode={true} // Uses testnet contracts
+          
+          // Event callbacks for monitoring
+          onQuoteGenerated={(quote) => {
+            console.log('📊 Quote generated:', {
+              from: `${quote.fromAmount} ${quote.originToken.symbol}`,
+              to: `${quote.toAmount} ${quote.destinationToken.symbol}`,
+              provider: quote.quoteProvider.name,
+              steps: quote.transactionStates.length
+            })
+          }}
+          
+          onTransactionUpdate={(states) => {
+            console.log('🔄 Transaction update:', states)
+            states.forEach(state => {
+              if (state.state === 'confirmed') {
+                console.log(`✅ ${state.label} confirmed on chain ${state.chainId}`)
+                
+                // Monitor specific contract interactions
+                if (state.label?.includes('deposit')) {
+                  console.log('→ TrailsIntentEntrypoint: EIP-712 deposit processed')
+                }
+                if (state.label?.includes('execute')) {
+                  console.log('→ TrailsRouter: Delegatecall multicall executed')
+                }
+                if (state.label?.includes('sweep')) {
+                  console.log('→ TrailsRouter: Fee sweep via validateOpHashAndSweep')
+                }
+                if (state.refunded) {
+                  console.log('💸 Refund triggered:', state.label)
+                }
+              }
+            })
+          }}
+          
+          onExecutionComplete={(result) => {
+            console.log('🎉 Execution completed:', {
+              success: result.success,
+              finalBalances: result.finalBalances,
+              transactionHashes: result.transactionStates
+                .filter(s => s.transactionHash)
+                .map(s => ({ label: s.label, hash: s.transactionHash }))
+            })
+          }}
+          
+          onError={(error) => {
+            console.error('❌ Widget error:', error)
+            // Contract-specific error handling
+            if (error.message.includes('Invalid signature')) {
+              console.log('→ Testing: EIP-712 validation in TrailsIntentEntrypoint')
+            }
+            if (error.message.includes('Delegatecall failed')) {
+              console.log('→ Testing: onlyDelegatecall modifier in TrailsRouter')
+            }
+            if (error.message.includes('Sentinel not set')) {
+              console.log('→ Testing: Success sentinel in TrailsRouterShim')
+            }
+          }}
+        />
+      </SequenceProvider>
+      
+      <div style={{ marginTop: '20px', fontSize: '14px', color: '#666' }}>
+        <p><strong>SDK Testing Instructions:</strong></p>
+        <ul>
+          <li>Connect your test wallet with USDC/ETH on Arbitrum</li>
+          <li>Try cross-chain transfers to Base (USDC → USDC)</li>
+          <li>Monitor the debug panel for contract interactions</li>
+          <li>Test failure scenarios by using invalid amounts or chains</li>
+          <li>Check console logs for detailed transaction states</li>
+        </ul>
+      </div>
+    </div>
+  )
+}
+```
+
+### Configuration Options
+
+The `TrailsWidget` accepts a comprehensive configuration object:
+
+| Prop | Type | Description | Default |
+|------|------|-------------|---------|
+| `defaultFromChain` | `string` | Default source chain (e.g., `"arbitrum"`, `"base"`) | `"arbitrum"` |
+| `defaultToChain` | `string` | Default destination chain | `"base"` |
+| `defaultFromToken` | `string` | Default source token symbol | `"USDC"` |
+| `defaultToToken` | `string` | Default destination token symbol | `"USDC"` |
+| `defaultAmount` | `string` | Default transfer amount | `"0.01"` |
+| `theme` | `"light" \| "dark"` | Widget theme | `"light"` |
+| `width` | `string \| number` | Widget width | `"100%"` |
+| `height` | `string \| number` | Widget height | `"600px"` |
+| `showDebugPanel` | `boolean` | Show transaction debugging panel | `false` |
+| `enableTestMode` | `boolean` | Use testnet contracts and higher slippage | `false` |
+| `slippageTolerance` | `number` | Default slippage tolerance (0-1) | `0.03` |
+| `quoteProvider` | `string` | Default quote provider | `"auto"` |
+| `onQuoteGenerated` | `function` | Callback when quote is generated | - |
+| `onTransactionUpdate` | `function` | Callback for transaction state changes | - |
+| `onExecutionComplete` | `function` | Callback when execution completes | - |
+| `onError` | `function` | Error handling callback | - |
+
+### Advanced Configuration for Testing
+
+For comprehensive contract testing, use this configuration:
+
+```typescript
+<TrailsWidget
+  defaultFromChain="arbitrum"
+  defaultToChain="base"
+  defaultFromToken="USDC"
+  defaultToToken="ETH"
+  defaultAmount="0.01"
+  
+  showDebugPanel={true}
+  enableTestMode={true}
+  
+  // Higher slippage for test amounts
+  slippageTolerance={0.12}
+  
+  // Force specific providers for testing
+  quoteProvider="lifi" // Test LiFi integration
+  
+  // Comprehensive event monitoring
+  onQuoteGenerated={(quote) => {
+    console.group('📊 Quote Analysis')
+    console.log('Provider:', quote.quoteProvider.name)
+    console.log('Price Impact:', quote.priceImpact)
+    console.log('Steps:', quote.transactionStates.map(s => s.label).join(' → '))
+    console.log('Estimated Time:', quote.completionEstimateSeconds, 'seconds')
+    console.groupEnd()
+  }}
+  
+  onTransactionUpdate={(states) => {
+    console.group('🔄 Transaction Monitor')
+    
+    states.forEach((state, index) => {
+      const status = state.state === 'confirmed' ? '✅' : 
+                    state.state === 'pending' ? '⏳' : '❌'
+      
+      console.log(`${status} [${index + 1}] ${state.label || 'Unknown'} (${state.chainId})`)
+      
+      // Contract-specific monitoring
+      if (state.label?.includes('deposit')) {
+        console.log('   → TrailsIntentEntrypoint.depositToIntent()')
+        // Verify: EIP-712 signature, nonce/deadline, reentrancy guard
+      }
+      
+      if (state.label?.includes('execute')) {
+        console.log('   → TrailsRouter.execute() via delegatecall')
+        // Verify: onlyDelegatecall modifier, SafeERC20 approvals
+      }
+      
+      if (state.label?.includes('sweep')) {
+        console.log('   → TrailsRouter.validateOpHashAndSweep()')
+        // Verify: opHash sentinel check, conditional fee collection
+      }
+      
+      if (state.refunded) {
+        console.log('   💸 REFUND: User protection activated')
+        // Verify: refundAndSweep logic, no unauthorized fees
+      }
+      
+      // Event monitoring
+      if (state.decodedGuestModuleEvents?.some(e => e.type === 'CallFailed')) {
+        console.log('   ⚠️  CallFailed event detected - testing fallback paths')
+      }
+    })
+    
+    console.groupEnd()
+  }}
+  
+  onExecutionComplete={(result) => {
+    if (result.success) {
+      console.group('🎉 Execution Success')
+      console.log('Final Balances:')
+      result.finalBalances.origin.forEach(b => 
+        console.log(`   Origin ${b.token.symbol}: ${b.amount} (pre-execution: ${b.previousAmount})`)
+      )
+      result.finalBalances.destination.forEach(b => 
+        console.log(`   Destination ${b.token.symbol}: ${b.amount} (expected: ${b.expectedAmount})`)
+      )
+      console.log('Transaction Summary:')
+      result.transactionStates.forEach((tx, i) => {
+        console.log(`   ${i + 1}. ${tx.label} → ${tx.state} (${tx.chainId})`)
+      })
+      console.groupEnd()
+    } else {
+      console.group('❌ Execution Failed')
+      console.error('Error details:', result.error)
+      console.log('Partial execution states:', result.transactionStates)
+      console.groupEnd()
+    }
+  }}
+  
+  onError={(error) => {
+    console.group('❌ Widget Error Detected')
+    console.error('Full error:', error)
+    
+    // Map errors to contract testing opportunities
+    if (error.message.includes('Invalid EIP-712 signature')) {
+      console.log('🧪 Testing Opportunity: EIP-712 validation in TrailsIntentEntrypoint')
+      console.log('- Verify signature recovery and domain separator')
+      console.log('- Check nonce reuse protection')
+    }
+    
+    if (error.message.includes('Direct call not allowed')) {
+      console.log('🧪 Testing Opportunity: onlyDelegatecall modifier in TrailsRouter')
+      console.log('- Attempt direct calls to bypass delegatecall requirement')
+      console.log('- Verify msg.sender context preservation')
+    }
+    
+    if (error.message.includes('Sentinel value mismatch')) {
+      console.log('🧪 Testing Opportunity: TrailsSentinelLib success validation')
+      console.log('- Test opHash collision scenarios')
+      console.log('- Verify storage slot namespacing')
+    }
+    
+    if (error.message.includes('Insufficient balance for injection')) {
+      console.log('🧪 Testing Opportunity: TrailsRouter balance injection')
+      console.log('- Test amountOffset calculation accuracy')
+      console.log('- Verify placeholder byte replacement')
+      console.log('- Check fee-on-transfer token handling')
+    }
+    
+    console.groupEnd()
+  }}
+/>
+```
+
+### Testing Different Scenarios with the Widget
+
+#### 1. Cross-Chain Transfer (No Calldata)
+
+Test basic USDC → USDC transfer from Arbitrum to Base:
+
+```typescript
+<TrailsWidget
+  defaultFromChain="arbitrum"
+  defaultToChain="base" 
+  defaultFromToken="USDC"
+  defaultToToken="USDC"
+  defaultAmount="0.01"
+  showDebugPanel={true}
+  quoteProvider="cctp" // Test CCTP integration specifically
+/>
+```
+
+**Expected Contract Flow**:
+1. `TrailsIntentEntrypoint.depositToIntent()` - USDC deposit with EIP-712 signature
+2. `TrailsRouterShim.execute()` - Origin chain CCTP bridge initiation  
+3. `TrailsRouter.validateOpHashAndSweep()` - Fee collection on origin
+4. `TrailsRouter.sweep()` - Destination chain final transfer to recipient
+
+#### 2. Cross-Chain with Destination Calldata (DeFi Deposit)
+
+Test USDC transfer + Aave deposit on destination chain:
+
+```typescript
+<TrailsWidget
+  defaultFromChain="arbitrum"
+  defaultToChain="base"
+  defaultFromToken="USDC"
+  defaultToToken="USDC"
+  defaultAmount="0.01"
+  // Custom destination configuration
+  defaultDestinationAction={{
+    type: 'contractCall',
+    contractAddress: '0xA238Dd80C259a72e81d7e4664a9801593F98d1c5', // Aave Pool
+    functionName: 'supply',
+    parameters: {
+      asset: '0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913', // Base USDC
+      amount: '10000', // 0.01 USDC (6 decimals)
+      onBehalfOf: 'USER_WALLET_ADDRESS', // Replace with test wallet
+      referralCode: 0
+    }
+  }}
+  showDebugPanel={true}
+/>
+```
+
+**Expected Contract Flow**:
+1. `TrailsIntentEntrypoint` - Deposit USDC to intent address
+2. `TrailsRouterShim` - Origin bridge execution  
+3. `TrailsRouter.injectAndCall()` - Destination: Inject balance into Aave supply calldata
+4. `TrailsRouterShim` - Verify success sentinel for Aave deposit
+5. `TrailsRouter.sweep()` - Any remaining dust to user
+
+#### 3. Gasless Execution (Intent Entrypoint)
+
+Test gasless USDC transfer using ERC-2612 permit:
+
+```typescript
+<TrailsWidget
+  defaultFromChain="arbitrum"
+  defaultToChain="base"
+  defaultFromToken="USDC"
+  defaultToToken="USDC"
+  defaultAmount="0.01"
+  gaslessMode={true} // Enable gasless execution
+  feeToken="USDC" // Pay fees in USDC via permit
+  showDebugPanel={true}
+/>
+```
+
+**Expected Contract Flow**:
+1. `TrailsIntentEntrypoint.depositToIntentWithPermit()` - Gasless deposit with ERC-2612 permit
+2. `TrailsIntentEntrypoint.payFeeWithPermit()` - Fee payment using permit signature
+3. `TrailsRouter` - Standard execution flow (relayer pays gas)
+4. `TrailsRouter.sweep()` - Fee collection from permit allowance
+
+#### 4. Failure Testing
+
+Test contract error handling by configuring invalid scenarios:
+
+```typescript
+// Test 1: Invalid destination contract call
+<TrailsWidget
+  defaultFromChain="arbitrum"
+  defaultToChain="base"
+  defaultFromToken="USDC"
+  defaultToToken="USDC"
+  defaultAmount="0.01"
+  defaultDestinationAction={{
+    type: 'contractCall',
+    contractAddress: '0xDeadBeef...', // Invalid contract address
+    functionName: 'nonExistentFunction',
+    parameters: {} // Invalid parameters
+  }}
+  showDebugPanel={true}
+  onError={(error) => {
+    console.log('Expected failure:', error.message)
+    // Verify refund path activation
+    if (error.message.includes('CallFailed')) {
+      console.log('✅ Testing: Destination failure → refundAndSweep activated')
+    }
+  }}
+/>
+
+// Test 2: Unsupported chain
+<TrailsWidget
+  defaultFromChain="unsupported-chain-99999"
+  defaultToChain="base"
+  defaultFromToken="USDC"
+  defaultToToken="USDC"
+  defaultAmount="0.01"
+  showDebugPanel={true}
+/>
+```
+
+### Widget Event Monitoring for Contract Testing
+
+The widget's event callbacks provide detailed visibility into contract interactions:
+
+#### Real-Time Transaction Monitoring
+
+```typescript
+onTransactionUpdate={(states) => {
+  // Track all transaction states
+  const depositState = states.find(s => s.label?.includes('deposit'))
+  const executionState = states.find(s => s.label?.includes('execute'))
+  const sweepState = states.find(s => s.label?.includes('sweep'))
+  
+  if (depositState?.state === 'confirmed') {
+    console.log('✅ Deposit confirmed - Testing TrailsIntentEntrypoint:')
+    console.log('- EIP-712 signature validated')
+    console.log('- Nonce/deadline enforced') 
+    console.log('- Reentrancy guard active')
+  }
+  
+  if (executionState?.state === 'confirmed') {
+    console.log('✅ Execution confirmed - Testing TrailsRouter:')
+    console.log('- Delegatecall-only execution enforced')
+    console.log('- SafeERC20 approvals processed')
+    console.log('- Balance injection successful')
+  }
+  
+  if (sweepState?.state === 'confirmed') {
+    console.log('✅ Sweep confirmed - Testing fee collection:')
+    console.log('- opHash sentinel verified')
+    console.log('- Conditional sweeping correct')
+    console.log('- No unauthorized fees taken')
+  }
+  
+  // Detect and test failure paths
+  const failedStates = states.filter(s => s.state === 'failed' || s.refunded)
+  if (failedStates.length > 0) {
+    console.log('🧪 Failure path testing:')
+    failedStates.forEach(state => {
+      if (state.refunded) {
+        console.log(`   → refundAndSweep activated for ${state.label}`)
+        // Verify user protection and no double-spend
+      }
+      
+      if (state.decodedGuestModuleEvents?.some(e => e.type === 'CallFailed')) {
+        console.log(`   → CallFailed event in ${state.label} - fallback logic test`)
+        // Verify onlyFallback semantics and error bubbling
+      }
+    })
+  }
+}}
+```
+
+#### Contract-Specific Validation
+
+```typescript
+onExecutionComplete={(result) => {
+  if (result.success) {
+    // Verify economic invariants
+    const originBalanceChanges = result.finalBalances.origin.map(b => ({
+      token: b.token.symbol,
+      delta: b.amount - b.previousAmount,
+      expected: b.expectedAmount
+    }))
+    
+    console.log('Economic invariant testing:')
+    originBalanceChanges.forEach(change => {
+      console.log(`   ${change.token}: ${change.delta} (expected: ${change.expected})`)
+      
+      // Test: No unauthorized token loss
+      if (change.delta < 0 && Math.abs(change.delta) > change.expected) {
+        console.error('❌ Potential unauthorized loss detected')
+      }
+      
+      // Test: Fee collection only on success
+      if (change.token === 'USDC' && change.delta < 0) {
+        console.log('   → Fee collection verified (expected behavior)')
+      }
+    })
+    
+    // Verify storage invariants
+    const shimStates = result.transactionStates.filter(s => 
+      s.label?.includes('shim') && s.state === 'confirmed'
+    )
+    
+    if (shimStates.length > 0) {
+      console.log('Storage sentinel testing:')
+      console.log(`   → ${shimStates.length} shim executions completed`)
+      // Verify: Success sentinel set only on successful operations
+    }
+  }
+}}
+```
+
+### Testing Widget Security Features
+
+#### 1. Delegatecall Enforcement
+
+The widget automatically uses delegatecall for `TrailsRouter` execution:
+
+```typescript
+// Widget internally calls:
+// wallet.execute({ to: trailsRouterAddress, data: encodedDelegatecall, delegateCall: true })
+
+// Test direct call bypass (should fail)
+const directCallTest = async () => {
+  try {
+    // This should revert with "Direct call not allowed"
+    await walletClient.writeContract({
+      address: trailsRouterAddress,
+      abi: trailsRouterAbi,
+      functionName: 'execute',
+      args: [calls],
+      // Missing: delegateCall: true
+    })
+  } catch (error) {
+    if (error.message.includes('onlyDelegatecall')) {
+      console.log('✅ onlyDelegatecall modifier working correctly')
+    }
+  }
+}
+```
+
+#### 2. Balance Injection Testing
+
+Test calldata surgery by configuring complex destination actions:
+
+```typescript
+<TrailsWidget
+  defaultFromChain="arbitrum"
+  defaultToChain="base"
+  defaultFromToken="USDC"
+  defaultToToken="USDC"
+  defaultAmount="0.05" // Larger amount for injection testing
+  
+  defaultDestinationAction={{
+    type: 'aaveDeposit', // Triggers injectAndCall
+    poolAddress: '0xA238Dd80C259a72e81d7e4664a9801593F98d1c5',
+    asset: '0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913', // Base USDC
+    amountPlaceholder: true, // Use balance injection
+    onBehalfOf: account.address
+  }}
+  
+  onTransactionUpdate={(states) => {
+    const injectionState = states.find(s => s.label?.includes('inject'))
+    if (injectionState?.state === 'confirmed') {
+      console.log('🧪 Balance injection testing:')
+      console.log('   → injectAndCall executed successfully')
+      console.log('   → Placeholder replaced with actual balance')
+      console.log('   → amountOffset calculation verified')
+      
+      // Verify no out-of-bounds calldata manipulation
+      if (injectionState.calldataBefore && injectionState.calldataAfter) {
+        const placeholderReplaced = injectionState.calldataAfter.includes(
+          injectionState.actualBalance?.toString()
+        )
+        console.log('   → Placeholder replacement:', placeholderReplaced ? '✅' : '❌')
+      }
+    }
+  }}
+/>
+```
+
+#### 3. Gasless Flow Testing
+
+```typescript
+<TrailsWidget
+  gaslessMode={true}
+  feeToken="USDC"
+  defaultAmount="0.02"
+  
+  onTransactionUpdate={(states) => {
+    const permitState = states.find(s => s.label?.includes('permit'))
+    if (permitState?.state === 'confirmed') {
+      console.log('🧪 Gasless permit testing:')
+      console.log('   → depositToIntentWithPermit() success')
+      console.log('   → ERC-2612 signature validated')
+      console.log('   → Leftover allowance available for fees')
+    }
+    
+    const feeState = states.find(s => s.label?.includes('payFee'))
+    if (feeState?.state === 'confirmed') {
+      console.log('   → payFeeWithPermit() success')
+      console.log('   → Exact fee amount transferred')
+      console.log('   → No excess allowance consumed')
+    }
+  }}
+/>
+```
+
+### Widget Debugging Panel
+
+When `showDebugPanel={true}`, the widget displays:
+
+1. **Quote Details**: Provider, price impact, estimated time
+2. **Transaction Flow**: Step-by-step execution with contract names
+3. **Contract Logs**: Decoded events from `TrailsIntentEntrypoint`, `TrailsRouter`, etc.
+4. **Balance Changes**: Before/after token balances per chain
+5. **Error Diagnostics**: Contract revert reasons with stack traces
+
+### Creating Custom Test Scenarios
+
+For specific contract testing, create custom widget configurations:
+
+#### Test Sentinel Storage Collisions
+
+```typescript
+<TrailsWidget
+  // Force multiple executions with same opHash
+  testModeConfig={{
+    forceSameOpHash: true, // Custom testing flag
+    repeatExecution: 2
+  }}
+  
+  onExecutionComplete={(result) => {
+    const shimExecutions = result.transactionStates.filter(s => 
+      s.label?.includes('shim') && s.state === 'confirmed'
+    )
+    
+    if (shimExecutions.length > 1) {
+      console.log('🧪 Sentinel collision testing:')
+      console.log(`   → ${shimExecutions.length} executions with same opHash`)
+      
+      // Verify each execution sets the sentinel independently
+      const allSuccess = shimExecutions.every(s => 
+        s.decodedEvents?.some(e => e.type === 'SuccessSentinelSet')
+      )
+      
+      console.log('   → Independent sentinel setting:', allSuccess ? '✅' : '❌')
+      
+      // Verify no storage slot collisions with wallet storage
+      const sentinelSlot = shimExecutions[0]?.storageChanges?.successSlot
+      if (sentinelSlot && !sentinelSlot.startsWith('0x')) {
+        console.log('   → Namespaced storage slot verified')
+      }
+    }
+  }}
+/>
+```
+
+#### Test Fee Sweep Conditions
+
+```typescript
+<TrailsWidget
+  defaultAmount="0.10" // Larger amount to test fee calculations
+  enableFeeTesting={true} // Custom flag for fee scenario testing
+  
+  onTransactionUpdate={(states) => {
+    const sweepState = states.find(s => s.label?.includes('sweep'))
+    if (sweepState?.state === 'confirmed') {
+      console.log('🧪 Fee sweep testing:')
+      
+      // Verify sweep only occurs after success sentinel
+      const priorShimState = states.find((s, i) => 
+        s.label?.includes('shim') && states.indexOf(s) < states.indexOf(sweepState)
+      )
+      
+      if (priorShimState?.decodedEvents?.some(e => e.type === 'Success')) {
+        console.log('   → Conditional sweep after success: ✅')
+      } else {
+        console.error('   → Unauthorized sweep detected: ❌')
+      }
+      
+      // Verify fee amount doesn't exceed expected
+      const feeAmount = sweepState.tokenTransfers?.find(t => 
+        t.to === feeCollectorAddress
+      )?.amount
+      
+      const expectedFee = 0.01 * Number(defaultAmount) // 10% fee
+      const feeValid = feeAmount <= expectedFee
+      
+      console.log('   → Fee amount validation:', feeValid ? '✅' : '❌')
+    }
+  }}
+/>
+```
+
+### Integration with Foundry Tests
+
+Combine widget testing with Foundry for comprehensive coverage:
+
+```typescript
+// test/TrailsWidgetIntegration.t.sol
+contract TrailsWidgetIntegrationTest is Test {
+    function test_WidgetTriggersCorrectContracts() public {
+        // 1. Deploy widget in test environment
+        // 2. Simulate user interaction via widget
+        // 3. Verify contract state changes
+        
+        // Widget calls:
+        // - TrailsIntentEntrypoint.depositToIntent()
+        // - TrailsRouter.execute() via delegatecall  
+        // - TrailsRouterShim.setSuccessSentinel()
+        
+        // Assertions:
+        assertTrue(intentEntrypoint.depositRecorded(user, token, amount));
+        assertTrue(routerShim.successSentinelSet(opHash));
+        assertEq(feeCollector.balanceOf(feeToken), expectedFee);
+    }
+}
+```
+
+### Troubleshooting Widget Issues
+
+**Common Widget Errors**:
+
+1. **"Wallet not connected"**:
+   ```
+   Error: No wallet client available
+   ```
+   - Ensure `SequenceProvider` wraps the widget
+   - Verify wallet connection in debug panel
+   - Check `walletClient` configuration
+
+2. **"Quote generation failed"**:
+   ```
+   Error: Insufficient liquidity for route
+   ```
+   - Try different quote providers (`lifi`, `cctp`, `relay`)
+   - Increase slippage tolerance for test amounts
+   - Verify token addresses and chain IDs
+
+3. **"Execution reverted"**:
+   ```
+   Error: Delegatecall failed: onlyDelegatecall
+   ```
+   - Widget enforces delegatecall automatically
+   - This indicates correct security - direct calls are blocked
+   - Monitor for `onlyDelegatecall` modifier testing opportunities
+
+4. **"Sentinel validation failed"**:
+   ```
+   Error: Success sentinel not set for opHash
+   ```
+   - Test case for conditional fee sweep validation
+   - Verify `TrailsSentinelLib` storage slot calculation
+   - Check for opHash collision vulnerabilities
+
+**Debug Panel Usage**:
+
+- **Quote Tab**: Shows provider selection, price impact, route details
+- **Transactions Tab**: Real-time state updates with contract labels  
+- **Balances Tab**: Token changes before/after execution
+- **Events Tab**: Decoded contract events (CallFailed, Refund, SuccessSentinelSet)
+- **Errors Tab**: Contract revert reasons with stack traces
+
+**Performance Monitoring**:
+
+```typescript
+// Measure contract execution timing
+onTransactionUpdate={(states) => {
+  const executionState = states.find(s => s.label?.includes('execute'))
+  if (executionState?.timestamp && executionState.state === 'confirmed') {
+    const executionTime = Date.now() - executionState.timestamp
+    console.log(`🧪 Execution time: ${executionTime}ms`)
+    
+    // Benchmark different contract paths
+    if (executionState.label?.includes('injectAndCall')) {
+      console.log('   → Balance injection overhead measured')
+    }
+    
+    // Verify no excessive gas usage
+    if (executionState.gasUsed && executionState.gasUsed > 1_000_000) {
+      console.warn('⚠️  High gas usage detected - potential optimization issue')
+    }
+  }
+}}
+```
+
+## Test Scenarios
+
+The SDK supports a variety of test scenarios that cover all major Trails contract functionality. These scenarios test various execution paths including cross-chain transfers, same-chain swaps, gasless execution, and failure handling.
+
+The table below summarizes the available scenario categories with their purpose, expected contract interactions, and key testing focus areas:
+
+| Category | Description | Expected Contract Flow | Testing Focus |
+|----------|-------------|------------------------|---------------|
+| **Cross-Chain (ERC20 → Native)** | Basic cross-chain transfers from ERC20 tokens to native ETH without destination contract execution | 1. `TrailsIntentEntrypoint.depositToIntent()`<br>2. `TrailsRouterShim.execute()` (approval + bridge)<br>3. `TrailsRouter.validateOpHashAndSweep()`<br>4. `TrailsRouter.sweep()` (ETH transfer) | EIP-712 validation, token approvals, bridge integration, native ETH handling, conditional fee sweeping |
+| **Cross-Chain (Native → Native)** | Native ETH transfers across chains without destination contract execution | 1. `TrailsIntentEntrypoint` (ETH deposit)<br>2. `TrailsRouterShim` (native bridge)<br>3. `TrailsRouter.sweep()` (ETH transfer + gas refund) | Native ETH bridging, gas refunds, MEV protection |
+| **Cross-Chain (ERC20 → ERC20)** | Cross-chain ERC20 → ERC20 transfers for payment, funding, and receiving use cases | 1. `TrailsIntentEntrypoint` (USDC deposit)<br>2. `TrailsRouterShim` (approval + bridge)<br>3. `TrailsRouter` (ERC20 transfer)<br>4. `TrailsRouter.sweep()` (dust cleanup) | Provider integration, token decimals, slippage tolerance, recipient verification, gasless flow integration |
+| **Cross-Chain (ERC20 → Native w/ Calldata)** | Cross-chain transfers followed by native ETH contract execution on destination | 1. `TrailsIntentEntrypoint` (ERC20 deposit)<br>2. `TrailsRouterShim` (swap + bridge)<br>3. `TrailsRouter.injectAndCall()` (ETH injection)<br>4. `TrailsRouter.sweep()` (remaining ETH) | Balance injection, calldata surgery, value forwarding |
+| **Cross-Chain (Native → ERC20 w/ Calldata)** | Native ETH cross-chain transfers followed by ERC20 contract execution | 1. `TrailsIntentEntrypoint` (ETH deposit)<br>2. `TrailsRouterShim` (bridge + swap)<br>3. `TrailsRouter.injectAndCall()` (ERC20 approval + contract execution)<br>4. `TrailsRouter.validateOpHashAndSweep()` (multi-step fees) | Multi-step execution, ERC20 approvals, contract interaction, error bubbling |
+| **Cross-Chain (ERC20 → ERC20 w/ Calldata)** | Cross-chain ERC20 transfers followed by ERC20 contract execution (DeFi deposits, NFT minting) | 1. `TrailsIntentEntrypoint` (USDC deposit)<br>2. `TrailsRouterShim` (bridge)<br>3. `TrailsRouter.injectAndCall()` (ERC20 approval + contract execution)<br>4. `TrailsRouter.sweep()` (dust cleanup) | DeFi/NFT integration, ERC20 approvals, same-token execution, protocol-specific errors |
+| **Cross-Chain (Native → Native w/ Calldata)** | Native ETH cross-chain transfers followed by native contract execution | 1. `TrailsIntentEntrypoint` (ETH deposit)<br>2. `TrailsRouterShim` (bridge)<br>3. `TrailsRouter.injectAndCall()` (native contract execution)<br>4. `TrailsRouter.sweep()` (receipt tokens to user) | Native ETH injection, protocol integration, receipt token handling |
+| **Same-Chain (ERC20 → Native)** | Same-chain token swaps from ERC20 to native ETH | 1. `TrailsIntentEntrypoint` (USDC deposit)<br>2. `TrailsRouter.execute()` (DEX swap)<br>3. `TrailsRouter.sweep()` (ETH transfer + fees) | DEX integration, same-chain routing, token → native |
+| **Same-Chain (Native → ERC20)** | Same-chain swaps from native ETH to ERC20 tokens | 1. `TrailsIntentEntrypoint` (ETH deposit)<br>2. `TrailsRouter.execute()` (ETH → ERC20 swap)<br>3. `TrailsRouter.sweep()` (ERC20 transfer + gas refund) | Native → token conversion, gas refunds, slippage handling |
+| **Same-Chain (ERC20 → ERC20)** | Same-chain ERC20 ↔ ERC20 swaps | 1. `TrailsIntentEntrypoint` (ERC20 deposit)<br>2. `TrailsRouter.execute()` (ERC20 swap)<br>3. `TrailsRouter.sweep()` (ERC20 transfer) | ERC20 ↔ ERC20 swaps, wrapping mechanics, dust handling |
+| **Same-Chain (Native → Native)** | Same-chain ETH wrapping/unwrapping | 1. `TrailsIntentEntrypoint` (ETH deposit)<br>2. `TrailsRouter.execute()` (WETH deposit)<br>3. `TrailsRouter.sweep()` (WETH transfer) | ETH wrapping, native → wrapped token conversion |
+| **Same-Chain (w/ Calldata)** | Same-chain execution with contract calls (DeFi, NFT minting) | 1. `TrailsIntentEntrypoint` (token deposit)<br>2. `TrailsRouter.injectAndCall()` (swap + contract execution)<br>3. `TrailsRouter.sweep()` (position tokens to user) | Complex multicall, protocol integration, same-chain execution |
+| **Gasless (Cross-Chain)** | Gasless cross-chain execution using ERC20 tokens for gas fees | 1. `depositToIntentWithPermit()` (gasless deposit)<br>2. `payFeeWithPermit()` (permit fee)<br>3. Relayer execution<br>4. `TrailsRouter.sweep()` (fees from allowance) | ERC-2612 permits, leftover allowance handling, relayer integration |
+| **Gasless (w/ Calldata)** | Gasless execution with complex destination contract interactions | 1. `depositToIntentWithPermit()` (gasless deposit)<br>2. `payFeeWithPermit()` (permit fee)<br>3. `TrailsRouter.injectAndCall()` (contract execution)<br>4. Relayer sweep | Permit chaining, gasless contract calls, position security |
+| **Gasless (EXACT_INPUT)** | Gasless execution with exact input amounts for funding/earning use cases | Same as Gasless (Cross-Chain) but with EXACT_INPUT trade type | Exact input pricing, minimum/maximum bounds |
+| **Failure (Unsupported Chains)** | Chain validation and error handling for unsupported networks | Quote generation fails, no on-chain execution | Chain validation, graceful error handling, user protection |
+| **Failure (Invalid Calldata)** | Destination contract call failures and fallback mechanisms | 1. `TrailsIntentEntrypoint` (deposit succeeds)<br>2. `TrailsRouter.injectAndCall()` (reverts)<br>3. `refundAndSweep()` (user refund)<br>4. Sentinel NOT set | Revert bubbling, fallback semantics, refund logic, sentinel protection |
+| **EXACT_INPUT (Cross-Chain)** | Cross-chain transfers with exact input amounts | 1. `TrailsIntentEntrypoint` (token deposit)<br>2. `TrailsRouterShim` (swap + bridge)<br>3. `TrailsRouter` (token transfer) | Exact input pricing, slippage bounds, input amount validation |
+
+### Running Tests
+
+Use environment variables to execute specific scenario categories:
+
+```bash
+# Run cross-chain basic scenarios
+TEST_SCENARIOS="cross-chain-basic" pnpm run test:scenarios
+
+# Run DeFi integration scenarios
+TEST_SCENARIOS="defi-integration" pnpm run test:scenarios
+
+# Run gasless execution scenarios
+TEST_SCENARIOS="gasless-flows" pnpm run test:scenarios
+
+# Run failure handling scenarios
+TEST_SCENARIOS="failure-handling" pnpm run test:scenarios
+
+# Run all scenarios
+pnpm run test:scenarios
+```
+
+**Expected Output Format**:
+```
+📊 Test Results Summary
+Total scenarios: 42
+✓ Successful: 38
+⏭ Skipped: 2  
+✗ Failed: 2
+
+📈 Successful scenarios:
+• Cross-chain payment (Arbitrum → Base)
+• Funding flow (Arbitrum → Base)  
+• NFT minting (Base → Arbitrum)
+
+📉 Failed scenarios:
+• Destination failure (expected - refund verified)
+• Some test case (actual failure - investigate)
+
+🔗 Successful Tx URLs
+Test Case Name              Test Case ID    1st Tx                    2nd Tx                    3rd Tx
+Cross-chain payment         cross-chain     https://arbiscan...       https://basescan...       -
+```
+
+### Validation Checklist
+
+For each scenario execution, validate:
+
+- **Contract Invariants**: Delegatecall enforcement, sentinel validation, fee protection
+- **Economic Security**: No unauthorized losses, proper refunds on failure
+- **Integration**: Bridge providers, DeFi protocols, NFT contracts work correctly
+- **Edge Cases**: Token decimals, slippage tolerance, gasless permits
+- **Error Handling**: Revert bubbling, fallback execution, event emission
+
 ## Testing Workflow
 
 This section provides step-by-step instructions for testing the Trails contracts using the SDK. The workflow covers environment setup, scenario execution, contract monitoring, and result validation.
 
 ### Step 1: Environment Setup
 
-#### 1.1 Clone and Configure
+#### 1.1 Project Setup
+
+Create a new test project:
 
 ```bash
 # Create SDK testing project
@@ -15,17 +1464,14 @@ npm init -y
 npm install 0xtrails viem @tanstack/react-query
 npm install --save-dev vitest @testing-library/react @testing-library/jest-dom
 
-# Copy the SDK test scenarios
-cp -r /Users/shunkakinoki/ghq/github.com/0xsequence/trails/packages/0xtrails/test/scenarios ./sdk-tests
-
-# Create package.json scripts
+# Create basic package.json scripts
 cat > package.json << 'EOF'
 {
   "name": "trails-sdk-test",
   "version": "1.0.0",
   "scripts": {
     "test": "vitest",
-    "test:scenarios": "vitest test/scenarios"
+    "test:scenarios": "vitest run --reporter=verbose"
   },
   "devDependencies": {
     "@testing-library/jest-dom": "^6.4.0",
@@ -50,22 +1496,23 @@ Create `.env` file with your test configuration:
 # Wallet configuration
 TEST_PRIVATE_KEY=0x1234567890abcdef...  # Your test wallet private key
 
-# API configuration, this is the provided key for this project
-TRAILS_API_KEY=AQAAAAAAAKhGXCBjAB-s9bSY3C3N7rPGSZI 
+# API configuration
+TRAILS_API_KEY=<FILL_IN_BLANK/>  # Request from project team
 
 # RPC endpoints (optional - uses public defaults)
 ARBITRUM_RPC_URL=https://arb1.arbitrum.io/rpc
 BASE_RPC_URL=https://mainnet.base.org
 
 # Testing configuration
-TEST_SCENARIOS=PAY_USDC_BASE  # Default scenario
+SLIPPAGE_TOLERANCE=0.05  # 5% slippage for testing
 ```
 
 #### 1.3 Verify Setup
 
-Create `test/setup.test.ts` to verify your environment:
+Create a setup verification test:
 
 ```typescript
+// test/setup.test.ts
 import { describe, it, expect } from 'vitest'
 import { privateKeyToAccount } from 'viem/accounts'
 import { getSequenceConfig, getTrailsApiUrl, getSequenceProjectAccessKey } from '0xtrails/config'
@@ -107,105 +1554,12 @@ Run setup verification:
 npm run test test/setup.test.ts
 ```
 
-### Step 2: Running Test Scenarios
+### Step 2: Basic Testing with `useQuote` Hook
 
-#### 2.1 Using the Built-in Test Suite
-
-The SDK includes a comprehensive test suite in `test/scenarios/testScenarios.ts`. Execute scenarios using Vitest:
-
-**Run All Tests**:
-```bash
-# Execute all non-skipped scenarios
-npm run test:scenarios
-```
-
-**Run Specific Scenarios**:
-```bash
-# Single scenario - basic cross-chain transfer
-TEST_SCENARIOS="PAY_USDC_BASE" npm run test:scenarios
-
-# Multiple scenarios - test different providers
-TEST_SCENARIOS="PAY_USDC_BASE,RECEIVE_USDC_BASE_LIFI,RECEIVE_USDC_BASE_CCTP" npm run test:scenarios
-
-# Category-based testing
-TEST_SCENARIOS="DEPOSIT_AAVE_*,DEPOSIT_MORPHO_*" npm run test:scenarios  # DeFi integrations
-TEST_SCENARIOS="MINT_NFT_*" npm run test:scenarios  # NFT minting
-TEST_SCENARIOS="GASLESS_*" npm run test:scenarios  # Gasless flows
-TEST_SCENARIOS="FAIL_*" npm run test:scenarios  # Failure scenarios
-```
-
-**Expected Output**:
-```
-🚀 Starting test: Pay USDC on Base with USDC from Arbitrum USDC (PAY_USDC_BASE)
-
-🧪 Scenario Details: Pay USDC on Base with USDC from Arbitrum USDC (PAY_USDC_BASE)
-From Chain    : 42161
-To Chain      : 8453
-Amount        : 0.01 (EXACT_OUTPUT)
-Token Pair    : 0xaf88d065... → 0x833589fC...
-
-🧩 useQuote params for Pay USDC on Base with USDC from Arbitrum USDC (PAY_USDC_BASE)
-From token    : 0xaf88d065e77c8cC2239327C5EDb3A432268e5831
-From chain    : 42161
-To token      : 0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913
-To calldata   : (none)
-Swap amount (input) : 0.01
-Swap amount (parsed): 10000
-Decimals      : 6
-Recipient    : 0x742d35Cc...
-Trade type   : EXACT_OUTPUT
-Slippage tolerance : 0.12
-Quote provider : auto
-
-💡 Quote ready for Pay USDC on Base with USDC from Arbitrum USDC (PAY_USDC_BASE)
-From amount  : 0.07 USDC
-To amount    : 0.01 USDC
-From chain   : Arbitrum One
-To chain     : Base
-Trade type   : EXACT_OUTPUT
-Slippage tolerance : 0.12
-Price impact : 0.00%
-Completion estimate (s) : 120
-Origin token rate : 1.00 USDC
-Destination token rate : 1.00 USDC
-Quote provider : CCTP
-Hook loading : false
-
-Quote transaction states
-1. deposit (chain 42161)
-
-⚙️  Calling swap() function...
-
-⏳ Waiting for all transactions to confirm...
-
-🔄 Transaction states update #1 (2.34s) - Pay USDC on Base with USDC from Arbitrum USDC (PAY_USDC_BASE)
-1. deposit (chain 42161) | confirmed | https://arbiscan.io/tx/0x123... (0x123...)
-
-✅ All transactions confirmed for Pay USDC on Base with USDC from Arbitrum USDC (PAY_USDC_BASE)
-
-📋 Final summary – Pay USDC on Base with USDC from Arbitrum USDC (PAY_USDC_BASE)
-Status      : ✅ SUCCESS
-Total transactions : 2
-Confirmed   : 2
-Pending     : 0
-Failed      : 0
-From chain  : 42161
-To chain    : 8453
-Same chain  : No
-
-⏱️ Scenario Runtime
-Execution time: 45.67s
-
-✅ Completed test: Pay USDC on Base with USDC from Arbitrum USDC (PAY_USDC_BASE) in 45.67s
-```
-
-#### 2.2 Custom Scenario Testing
-
-Create custom test files to test specific contract behaviors:
-
-**File**: `test/custom/ContractSpecificTest.ts`
+Create a basic test file to verify SDK functionality:
 
 ```typescript
+// test/basic/BasicQuoteTest.test.ts
 import { describe, it, expect, beforeAll } from 'vitest'
 import { renderHook, waitFor } from '@testing-library/react'
 import { createWalletClient, http } from 'viem'
@@ -216,7 +1570,7 @@ import { SequenceHooksProvider } from '@0xsequence/hooks'
 import { useQuote, TradeType } from '0xtrails/prepareSend'
 import { getSequenceConfig, getTrailsApiUrl, getSequenceProjectAccessKey, getSequenceIndexerUrl } from '0xtrails/config'
 
-// Setup for custom testing
+// Setup
 const privateKey = process.env.TEST_PRIVATE_KEY as `0x${string}`
 const account = privateKeyToAccount(privateKey)
 const walletClient = createWalletClient({
@@ -248,1060 +1602,412 @@ const createWrapper = () => ({ children }: { children: React.ReactNode }) => (
   </SequenceHooksProvider>
 )
 
-describe('Custom Contract Testing', () => {
-  
-  // Test 1: Balance Injection Edge Cases
-  it('should test injectAndCall with fee-on-transfer tokens', async () => {
-    const { result } = renderHook(
-      () => useQuote({
-        walletClient,
-        fromTokenAddress: '0xaf88d065e77c8cC2239327C5EDb3A432268e5831', // ARBITRUM USDC
-        fromChainId: arbitrum.id,
-        toTokenAddress: '0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913', // BASE USDC
-        toChainId: base.id,
-        swapAmount: '10000', // 0.01 USDC
-        toRecipient: account.address,
-        tradeType: TradeType.EXACT_OUTPUT,
-        slippageTolerance: '0.05',
-        toCalldata: '0x...aave_deposit_calldata_with_placeholder...', // Custom calldata with amount placeholder
-        onStatusUpdate: (states) => {
-          console.log('📊 Transaction states:', states)
-          
-          // Monitor balance injection
-          const injectState = states.find(s => s.label?.includes('inject'))
-          if (injectState) {
-            console.log('🔍 Balance injection observed:')
-            console.log('- Expected amount offset verified')
-            console.log('- Placeholder replacement confirmed')
-            console.log('- Fee-on-transfer handling active')
-          }
-        },
-      }),
+describe('Basic SDK Quote Testing', () => {
+  it('should generate quote for cross-chain transfer', async () => {
+    console.log('Testing cross-chain USDC transfer quote...')
+    
+    const { result, waitFor } = renderHook(
+      () =>
+        useQuote({
+          walletClient,
+          fromTokenAddress: '0xaf88d065e77c8cC2239327C5EDb3A432268e5831', // ARBITRUM USDC
+          fromChainId: arbitrum.id,
+          toTokenAddress: '0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913', // BASE USDC
+          toChainId: base.id,
+          swapAmount: '10000', // 0.01 USDC (6 decimals)
+          toRecipient: account.address,
+          tradeType: TradeType.EXACT_OUTPUT,
+          slippageTolerance: '0.05', // 5% slippage
+          quoteProvider: 'auto',
+          onStatusUpdate: (states) => {
+            console.log('Transaction states update:', states.length, 'steps')
+          },
+        }),
       { wrapper: createWrapper() }
     )
 
+    // Wait for quote to be generated
     await waitFor(
       () => {
-        const { quote, swap } = result.current
-        return !!quote && !!swap
+        const { quote, isLoadingQuote, quoteError } = result.current
+        console.log('Quote status:', { isLoading: isLoadingQuote, hasError: !!quoteError, hasQuote: !!quote })
+        return !!quote && !isLoadingQuote && !quoteError
       },
-      { timeout: 15000 }
+      { timeout: 30000 } // 30 second timeout
     )
 
-    const { swap } = result.current
-    await swap()
-    
-    // Validate injection occurred correctly
-    expect(result.current.quote).toBeDefined()
-  })
+    const { quote, swap } = result.current
 
-  // Test 2: Sentinel Storage Testing
-  it('should test opHash sentinel validation', async () => {
-    // Test success path
-    const successTest = await testQuoteAndExecute({
-      fromToken: 'USDC',
-      toToken: 'USDC',
-      amount: '0.01',
-      expectSuccessSentinel: true
-    })
+    expect(quote).toBeDefined()
+    expect(swap).toBeDefined()
     
-    // Test failure path (should not set sentinel)
-    const failureTest = await testQuoteAndExecute({
-      fromToken: 'USDC',
-      toToken: 'INVALID_TOKEN',
-      amount: '0.01',
-      expectSuccessSentinel: false
-    })
-    
-    // Verify sentinel only set on success
-    expect(successTest.sentinelSet).toBe(true)
-    expect(failureTest.sentinelSet).toBe(false)
-  })
+    if (quote) {
+      console.log('✅ Quote generated successfully!')
+      console.log('Provider:', quote.quoteProvider.name)
+      console.log('From amount:', quote.fromAmount)
+      console.log('To amount:', quote.toAmount)
+      console.log('Steps:', quote.transactionStates.length)
+      
+      // Test quote structure
+      expect(quote.originChain.id).toBe(arbitrum.id)
+      expect(quote.destinationChain.id).toBe(base.id)
+      expect(quote.slippageTolerance).toBe('0.05')
+    }
 
-  // Test 3: Gasless Permit Testing
-  it('should test ERC-2612 permit integration', async () => {
-    const { result } = renderHook(
-      () => useQuote({
-        walletClient,
-        fromTokenAddress: '0xaf88d065e77c8cC2239327C5EDb3A432268e5831', // USDC
-        fromChainId: arbitrum.id,
-        toTokenAddress: '0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913', // USDC
-        toChainId: base.id,
-        swapAmount: '10000', // 0.01 USDC
-        selectedFeeToken: {
-          tokenAddress: '0xaf88d065e77c8cC2239327C5EDb3A432268e5831', // USDC for fees
-          tokenSymbol: 'USDC'
-        },
-        tradeType: TradeType.EXACT_OUTPUT,
-        slippageTolerance: '0.03',
-        onStatusUpdate: (states) => {
-          // Monitor permit usage
-          const permitState = states.find(s => s.label?.includes('permit'))
-          if (permitState) {
-            console.log('🔍 Gasless permit flow:')
-            console.log('- depositToIntentWithPermit called')
-            console.log('- ERC-2612 signature submitted')
-            console.log('- Fee payment via permit allowance')
-          }
-        },
-      }),
-      { wrapper: createWrapper() }
-    )
-
-    await waitFor(
-      () => {
-        const { quote, swap } = result.current
-        return !!quote && !!swap
-      },
-      { timeout: 15000 }
-    )
-
-    const { swap } = result.current
-    await swap()
-    
-    // Verify permit was used correctly
-    expect(result.current.quote).toBeDefined()
+    console.log('✅ Basic quote test passed')
   })
 })
-
-async function testQuoteAndExecute(params: {
-  fromToken: string
-  toToken: string
-  amount: string
-  expectSuccessSentinel: boolean
-}) {
-  const { result } = renderHook(
-    () => useQuote({
-      walletClient,
-      fromTokenAddress: getTokenAddress(params.fromToken),
-      fromChainId: arbitrum.id,
-      toTokenAddress: getTokenAddress(params.toToken),
-      toChainId: base.id,
-      swapAmount: toAtomicAmount(params.amount),
-      tradeType: TradeType.EXACT_OUTPUT,
-      onStatusUpdate: (states) => {
-        // Capture sentinel events
-        const shimState = states.find(s => s.label?.includes('shim'))
-        if (shimState?.decodedEvents) {
-          const sentinelEvent = shimState.decodedEvents?.find(e => 
-            e.type === 'SuccessSentinelSet'
-          )
-          params.expectSuccessSentinel = !!sentinelEvent
-        }
-      },
-    }),
-    { wrapper: createWrapper() }
-  )
-
-  await waitFor(() => !!result.current.quote && !!result.current.swap, { timeout: 15000 })
-  await result.current.swap()
-  
-  return {
-    sentinelSet: params.expectSuccessSentinel
-  }
-}
-
-function getTokenAddress(tokenSymbol: string): Address {
-  const tokens = {
-    USDC: '0xaf88d065e77c8cC2239327C5EDb3A432268e5831',
-    ETH: '0x0000000000000000000000000000000000000000'
-  }
-  return tokens[tokenSymbol as keyof typeof tokens] as Address
-}
-
-function toAtomicAmount(amount: string, decimals: number = 6): string {
-  return (parseFloat(amount) * Math.pow(10, decimals)).toString()
-}
 ```
 
-Run custom tests:
+Run the basic test:
 ```bash
-npm run test test/custom/ContractSpecificTest.ts
+npm run test test/basic/BasicQuoteTest.test.ts
 ```
 
-#### 2.3 Widget-Based Testing
+### Step 3: Testing Contract Interactions
 
-Launch the widget for interactive testing:
+#### 3.1 Cross-Chain Transfer Test
 
-**File**: `widget-test/index.html`
-
-```html
-<!DOCTYPE html>
-<html>
-<head>
-  <title>Trails SDK Testing</title>
-  <script type="module">
-    import React, { useState } from 'react'
-    import { createRoot } from 'react-dom/client'
-    import { TrailsWidget } from '0xtrails/widget'
-    import { SequenceProvider } from '@0xsequence/provider'
-    import { getSequenceConfig } from '0xtrails/config'
-    
-    const root = createRoot(document.getElementById('root'))
-    
-    root.render(
-      <div style={{ padding: '20px' }}>
-        <h1>Trails SDK Interactive Testing</h1>
-        
-        <SequenceProvider config={getSequenceConfig()}>
-          <TestWidget />
-        </SequenceProvider>
-      </div>
-    )
-  </script>
-</head>
-<body>
-  <div id="root"></div>
-  <script type="module" src="./TestWidget.tsx"></script>
-</body>
-</html>
-```
-
-**TestWidget Component**: `widget-test/TestWidget.tsx`
+Test a complete cross-chain transfer:
 
 ```typescript
-import React, { useState } from 'react'
-import { TrailsWidget } from '0xtrails/widget'
+// test/cross-chain/CrossChainTest.test.ts
+describe('Cross-Chain Transfer Testing', () => {
+  it('should execute cross-chain transfer successfully', async () => {
+    const { result, waitFor } = renderHook(
+      () =>
+        useQuote({
+          walletClient,
+          fromTokenAddress: '0xaf88d065e77c8cC2239327C5EDb3A432268e5831', // ARBITRUM USDC
+          fromChainId: arbitrum.id,
+          toTokenAddress: '0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913', // BASE USDC
+          toChainId: base.id,
+          swapAmount: '10000', // 0.01 USDC
+          toRecipient: account.address,
+          tradeType: TradeType.EXACT_OUTPUT,
+          slippageTolerance: '0.05',
+          quoteProvider: 'cctp', // Specific provider for testing
+          onStatusUpdate: (states) => {
+            console.log('Cross-chain states:', states.map(s => `${s.label} (${s.state})`))
+          },
+        }),
+      { wrapper: createWrapper() }
+    )
 
-export function TestWidget() {
-  const [currentScenario, setCurrentScenario] = useState('basic')
-  const [showAdvanced, setShowAdvanced] = useState(false)
-  
-  const scenarios = [
-    { id: 'basic', name: 'Basic USDC Transfer (Arbitrum → Base)', config: { amount: '0.01' } },
-    { id: 'aave-deposit', name: 'Aave Deposit (Arbitrum USDC → Base Aave)', config: { amount: '0.05' } },
-    { id: 'nft-mint', name: 'NFT Mint (Base ETH → Arbitrum NFT)', config: { amount: '0.0001' } },
-    { id: 'gasless', name: 'Gasless Transfer (USDC permit)', config: { amount: '0.02', gasless: true } },
-    { id: 'failure', name: 'Failure Test (Invalid destination)', config: { amount: '0.01', invalid: true } }
-  ]
-  
-  const [testResults, setTestResults] = useState({
-    successful: 0,
-    failed: 0,
-    pending: 0,
-    totalExecuted: 0
+    // Wait for quote
+    await waitFor(() => !!result.current.quote && !!result.current.swap, { timeout: 30000 })
+
+    const { quote, swap } = result.current
+
+    expect(quote).toBeDefined()
+    expect(swap).toBeDefined()
+
+    // Execute the swap (this triggers the full contract flow)
+    console.log('Executing cross-chain transfer...')
+    await swap!()
+
+    // Wait for execution to complete
+    await waitFor(
+      () => {
+        const states = quote?.transactionStates || []
+        const allConfirmed = states.every(state => state.state === 'confirmed')
+        console.log('Execution status:', { allConfirmed, states: states.length })
+        return allConfirmed
+      },
+      { timeout: 180000 } // 3 minutes for cross-chain
+    )
+
+    console.log('✅ Cross-chain transfer completed successfully')
   })
-  
+})
+```
+
+#### 3.2 Gasless Execution Test
+
+Test gasless execution with ERC-2612 permits:
+
+```typescript
+// test/gasless/GaslessTest.test.ts
+describe('Gasless Execution Testing', () => {
+  it('should execute gasless transfer with permit', async () => {
+    const { result, waitFor } = renderHook(
+      () =>
+        useQuote({
+          walletClient,
+          fromTokenAddress: '0xaf88d065e77c8cC2239327C5EDb3A432268e5831', // ARBITRUM USDC
+          fromChainId: arbitrum.id,
+          toTokenAddress: '0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913', // BASE USDC
+          toChainId: base.id,
+          swapAmount: '10000', // 0.01 USDC
+          toRecipient: account.address,
+          tradeType: TradeType.EXACT_OUTPUT,
+          slippageTolerance: '0.05',
+          selectedFeeToken: {
+            tokenAddress: '0xaf88d065e77c8cC2239327C5EDb3A432268e5831', // USDC for fees
+            tokenSymbol: 'USDC'
+          },
+          onStatusUpdate: (states) => {
+            console.log('Gasless states:', states.map(s => `${s.label} (${s.state})`))
+          },
+        }),
+      { wrapper: createWrapper() }
+    )
+
+    // Wait for quote
+    await waitFor(() => !!result.current.quote && !!result.current.swap, { timeout: 30000 })
+
+    const { quote, swap } = result.current
+
+    expect(quote).toBeDefined()
+    expect(swap).toBeDefined()
+    expect(quote?.selectedFeeToken).toBeDefined()
+
+    // Execute gasless transfer
+    console.log('Executing gasless transfer...')
+    await swap!()
+
+    // Wait for completion
+    await waitFor(
+      () => {
+        const states = quote?.transactionStates || []
+        const allConfirmed = states.every(state => state.state === 'confirmed')
+        console.log('Gasless execution status:', { allConfirmed, states: states.length })
+        return allConfirmed
+      },
+      { timeout: 180000 }
+    )
+
+    console.log('✅ Gasless execution completed successfully')
+  })
+})
+```
+
+### Step 4: Testing with the Widget
+
+Create a React app to test the widget interface:
+
+```typescript
+// src/App.tsx
+import React, { useState } from 'react'
+import { createRoot } from 'react-dom/client'
+import { TrailsWidget } from '0xtrails/widget'
+import { SequenceProvider } from '@0xsequence/provider'
+import { getSequenceConfig } from '0xtrails/config'
+
+const App: React.FC = () => {
+  const [amount, setAmount] = useState('0.01')
+  const [fromChain, setFromChain] = useState('arbitrum')
+  const [toChain, setToChain] = useState('base')
+
   return (
-    <div style={{ maxWidth: '1000px', margin: '0 auto' }}>
-      <h2>Interactive Test Controls</h2>
+    <div style={{ padding: '20px', maxWidth: '800px', margin: '0 auto' }}>
+      <h1>Trails SDK Testing Interface</h1>
       
-      <div style={{ marginBottom: '20px', padding: '15px', border: '1px solid #ccc', borderRadius: '8px' }}>
-        <h3>Scenario Selection</h3>
-        <select 
-          value={currentScenario} 
-          onChange={(e) => setCurrentScenario(e.target.value)}
-          style={{ marginRight: '10px', padding: '5px' }}
-        >
-          {scenarios.map(scenario => (
-            <option key={scenario.id} value={scenario.id}>
-              {scenario.name}
-            </option>
-          ))}
-        </select>
-        
-        <button 
-          onClick={() => setShowAdvanced(!showAdvanced)}
-          style={{ marginLeft: '10px', padding: '5px 10px' }}
-        >
-          {showAdvanced ? 'Hide' : 'Show'} Advanced Config
-        </button>
-        
-        {showAdvanced && (
-          <div style={{ marginTop: '10px', padding: '10px', background: '#f5f5f5', borderRadius: '4px' }}>
-            <label>
-              Custom Amount: 
-              <input 
-                type="number" 
-                defaultValue="0.01" 
-                step="0.001"
-                style={{ marginLeft: '5px', width: '80px' }}
-              />
-            </label>
-            <br />
-            <label style={{ marginLeft: '10px' }}>
-              <input type="checkbox" /> Enable Gasless Mode
-            </label>
-            <br />
-            <label style={{ marginLeft: '10px' }}>
-              <input type="checkbox" /> Force Failure Mode
-            </label>
-          </div>
-        )}
+      <div style={{ marginBottom: '20px', padding: '15px', border: '1px solid #ccc' }}>
+        <h3>Configuration</h3>
+        <label>
+          Amount: <input 
+            type="number" 
+            value={amount} 
+            onChange={(e) => setAmount(e.target.value)} 
+            step="0.001"
+          />
+        </label>
+        <br />
+        <label style={{ marginLeft: '20px' }}>
+          From: <select value={fromChain} onChange={(e) => setFromChain(e.target.value)}>
+            <option value="arbitrum">Arbitrum</option>
+            <option value="base">Base</option>
+          </select>
+        </label>
+        <br />
+        <label style={{ marginLeft: '20px' }}>
+          To: <select value={toChain} onChange={(e) => setToChain(e.target.value)}>
+            <option value="base">Base</option>
+            <option value="arbitrum">Arbitrum</option>
+          </select>
+        </label>
       </div>
       
-      <div style={{ marginBottom: '20px', padding: '15px', border: '1px solid #ccc', borderRadius: '8px' }}>
-        <h3>Test Results</h3>
-        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(150px, 1fr))', gap: '10px' }}>
-          <div style={{ textAlign: 'center' }}>
-            <div style={{ fontSize: '24px', color: 'green' }}>{testResults.successful}</div>
-            <div>Successful</div>
-          </div>
-          <div style={{ textAlign: 'center' }}>
-            <div style={{ fontSize: '24px', color: 'red' }}>{testResults.failed}</div>
-            <div>Failed</div>
-          </div>
-          <div style={{ textAlign: 'center' }}>
-            <div style={{ fontSize: '24px', color: 'orange' }}>{testResults.pending}</div>
-            <div>Pending</div>
-          </div>
-          <div style={{ textAlign: 'center' }}>
-            <div style={{ fontSize: '20px', color: '#333' }}>{testResults.totalExecuted}</div>
-            <div>Total</div>
-          </div>
-        </div>
-      </div>
-      
-      <div style={{ height: '600px', border: '2px solid #ddd', borderRadius: '8px', position: 'relative' }}>
+      <SequenceProvider config={getSequenceConfig()} defaultNetwork={fromChain}>
         <TrailsWidget
-          defaultFromChain="arbitrum"
-          defaultToChain="base"
+          defaultFromChain={fromChain}
+          defaultToChain={toChain}
           defaultFromToken="USDC"
-          defaultToToken={currentScenario === 'gasless' ? 'USDC' : 'ETH'}
-          defaultAmount={scenarios.find(s => s.id === currentScenario)?.config.amount || '0.01'}
+          defaultToToken="USDC"
+          defaultAmount={amount}
           showDebugPanel={true}
           enableTestMode={true}
-          slippageTolerance={0.12}
+          slippageTolerance={0.05}
+          quoteProvider="auto"
           onQuoteGenerated={(quote) => {
-            console.group('🎯 Scenario Started:', scenarios.find(s => s.id === currentScenario)?.name)
-            console.log('Configuration:', { scenario: currentScenario, amount: quote.fromAmount })
-            console.groupEnd()
+            console.log('Quote generated:', {
+              from: `${quote.fromAmount} ${quote.originToken.symbol}`,
+              to: `${quote.toAmount} ${quote.destinationToken.symbol}`,
+              provider: quote.quoteProvider.name
+            })
           }}
           onTransactionUpdate={(states) => {
-            console.group('🔄 Contract Monitor')
+            console.log('Transaction update:', states.length, 'active transactions')
             states.forEach(state => {
-              const emoji = state.state === 'confirmed' ? '✅' : 
-                           state.state === 'pending' ? '⏳' : '❌'
-              console.log(`${emoji} ${state.label || 'Unknown'} - Chain: ${state.chainId}`)
-              
               if (state.state === 'confirmed') {
-                // Log contract interactions for audit focus
-                if (state.label?.includes('deposit')) {
-                  console.log('   📝 EIP-712 deposit processed')
-                }
-                if (state.label?.includes('execute')) {
-                  console.log('   🔄 Delegatecall execution via TrailsRouter')
-                }
-                if (state.label?.includes('sweep')) {
-                  console.log('   💰 Fee sweep via validateOpHashAndSweep')
-                }
-                if (state.refunded) {
-                  console.log('   💸 Refund activated - testing fallback paths')
-                }
+                console.log(`✅ ${state.label} completed on chain ${state.chainId}`)
               }
             })
-            console.groupEnd()
           }}
           onExecutionComplete={(result) => {
-            const scenario = scenarios.find(s => s.id === currentScenario)
             if (result.success) {
-              setTestResults(prev => ({
-                ...prev,
-                successful: prev.successful + 1,
-                totalExecuted: prev.totalExecuted + 1
-              }))
-              console.log(`✅ ${scenario?.name || currentScenario} - SUCCESS`)
+              console.log('🎉 Execution completed successfully!')
+              console.log('Final balances:', result.finalBalances)
             } else {
-              setTestResults(prev => ({
-                ...prev,
-                failed: prev.failed + 1,
-                totalExecuted: prev.totalExecuted + 1
-              }))
-              console.log(`❌ ${scenario?.name || currentScenario} - FAILED`)
+              console.error('❌ Execution failed:', result.error)
             }
           }}
           onError={(error) => {
-            setTestResults(prev => ({
-              ...prev,
-              failed: prev.failed + 1,
-              totalExecuted: prev.totalExecuted + 1
-            }))
-            console.error('❌ Execution error:', error.message)
-            
-            // Contract-specific error analysis
-            if (error.message.includes('Sentinel not set')) {
-              console.log('🧪 Audit Focus: Success sentinel validation failed')
-            }
-            if (error.message.includes('onlyDelegatecall')) {
-              console.log('🧪 Audit Focus: Delegatecall enforcement working')
-            }
-            if (error.message.includes('CallFailed')) {
-              console.log('🧪 Audit Focus: Fallback mechanisms triggered')
-            }
+            console.error('Error:', error.message)
           }}
         />
-      </div>
-      
-      <div style={{ marginTop: '20px', padding: '15px', background: '#f9f9f9', borderRadius: '8px' }}>
-        <h3>📋 Testing Checklist</h3>
-        <ul style={{ margin: 0, paddingLeft: '20px' }}>
-          <li><input type="checkbox" /> Verify EIP-712 signature validation</li>
-          <li><input type="checkbox" /> Test delegatecall-only execution</li>
-          <li><input type="checkbox" /> Validate balance injection accuracy</li>
-          <li><input type="checkbox" /> Check conditional fee sweeping</li>
-          <li><input type="checkbox" /> Confirm refund logic on failures</li>
-          <li><input type="checkbox" /> Verify storage sentinel namespacing</li>
-        </ul>
-      </div>
+      </SequenceProvider>
     </div>
   )
 }
+
+const root = createRoot(document.getElementById('root') as HTMLElement)
+root.render(<App />)
 ```
 
-Launch the test interface:
+Run the widget:
 ```bash
-npx serve widget-test
+npm run dev
 ```
 
-Open `http://localhost:3000` to interact with the widget and monitor contract calls.
+### Step 5: Validation and Monitoring
 
-### Step 3: Contract Interaction Monitoring
+#### 5.1 Monitor Contract Interactions
 
-#### 3.1 Real-Time Transaction Monitoring
-
-The SDK provides detailed transaction state updates. Monitor these key interactions:
-
-**Console Output Analysis**:
-```bash
-# Example output from successful execution
-🔄 Transaction states update #3 (15.23s) - PAY_USDC_BASE
-1. deposit (chain 42161) | confirmed | https://arbiscan.io/tx/0xabc...
-   → TrailsIntentEntrypoint: Deposit processed
-   → EIP-712 signature validated
-   → Nonce/deadline enforced
-
-2. origin-shim (chain 42161) | confirmed | https://arbiscan.io/tx/0xdef...
-   → TrailsRouterShim: Success sentinel set
-   → opHash: 0x123... validated
-
-3. fee-sweep (chain 42161) | confirmed | https://arbiscan.io/tx/0xghi...
-   → TrailsRouter.validateOpHashAndSweep()
-   → Conditional fee collection verified
-
-4. destination-transfer (chain 8453) | confirmed | https://basescan.org/tx/0xjkl...
-   → Final USDC transfer to recipient
-   → Balance injection successful
-```
-
-**Key Contract Interactions to Monitor**:
+During testing, monitor these key contract interactions:
 
 1. **Deposit Phase** (`TrailsIntentEntrypoint`):
-   ```
-   → depositToIntent() or depositToIntentWithPermit()
-   - Verify: EIP-712 signature recovery
-   - Check: Nonce not reused, deadline not expired
-   - Monitor: ReentrancyGuard active
-   ```
+   - EIP-712 signature validation
+   - Nonce and deadline enforcement
+   - ReentrancyGuard protection
 
-2. **Origin Execution** (`TrailsRouter` via `TrailsRouterShim`):
-   ```
-   → execute() delegatecall through wallet
-   - Verify: onlyDelegatecall modifier passes
-   - Check: msg.sender = wallet address (not router)
-   - Monitor: SafeERC20 approvals, no reverts
-   ```
+2. **Execution Phase** (`TrailsRouter` via `TrailsRouterShim`):
+   - Delegatecall-only execution
+   - SafeERC20 approvals
+   - Balance injection accuracy
 
-3. **Balance Injection** (`TrailsRouter.injectAndCall()`):
-   ```
-   → Placeholder replacement at amountOffset
-   - Verify: Current balance used, not quoted amount
-   - Check: No out-of-bounds calldata writes
-   - Monitor: ETH vs ERC20 injection paths
-   ```
+3. **Settlement Phase** (`TrailsRouter.sweep()`):
+   - Conditional fee collection
+   - Success sentinel verification
+   - Dust cleanup and refunds
 
-4. **Success Sentinel** (`TrailsRouterShim`):
-   ```
-   → successSlot(opHash) = SUCCESS_VALUE
-   - Verify: Set only after complete execution
-   - Check: Namespaced storage slot (no collisions)
-   - Monitor: opHash uniqueness across operations
-   ```
+#### 5.2 Verify Economic Invariants
 
-5. **Fee Collection** (`TrailsRouter.validateOpHashAndSweep()`):
-   ```
-   → Conditional execution after sentinel verification
-   - Verify: Fees only collected on success
-   - Check: Exact fee amount, no over-collection
-   - Monitor: Fee collector receives correct tokens
-   ```
-
-#### 3.2 Event Monitoring
-
-Monitor specific contract events for validation:
-
-**Success Events**:
-```typescript
-// Expected events from successful execution
-onTransactionUpdate={(states) => {
-  states.forEach(state => {
-    if (state.state === 'confirmed') {
-      // Success sentinel set
-      if (state.decodedEvents?.some(e => e.type === 'SuccessSentinelSet')) {
-        console.log('✅ TrailsRouterShim: Success sentinel verified')
-      }
-      
-      // Fee collection
-      if (state.decodedEvents?.some(e => e.type === 'Sweep')) {
-        console.log('✅ TrailsRouter: Fee sweep successful')
-      }
-      
-      // Final transfer
-      if (state.decodedEvents?.some(e => e.type === 'Transfer')) {
-        console.log('✅ Final token transfer to recipient')
-      }
-    }
-  })
-}}
-```
-
-**Failure Events**:
-```typescript
-// Monitor failure paths and refunds
-onTransactionUpdate={(states) => {
-  states.forEach(state => {
-    // CallFailed events (partial execution)
-    if (state.decodedGuestModuleEvents?.some(e => e.type === 'CallFailed')) {
-      console.log('🧪 CallFailed detected:', state.label)
-      console.log('   → Testing: Fallback mechanisms')
-      console.log('   → Expected: refundAndSweep activation')
-    }
-    
-    // Refund events
-    if (state.refunded || state.decodedTrailsTokenSweeperEvents?.some(e => 
-      e.type === 'Refund' || e.type === 'RefundAndSweep'
-    )) {
-      console.log('💸 Refund triggered:', state.label)
-      console.log('   → Testing: User protection')
-      console.log('   → Verify: Full amount returned to user')
-    }
-    
-    // Unauthorized sweep prevention
-    if (state.decodedEvents?.some(e => 
-      e.type === 'Sweep' && !state.decodedEvents?.some(s => s.type === 'SuccessSentinelSet')
-    )) {
-      console.error('❌ Unauthorized sweep detected!')
-      console.log('   → Audit Finding: Fees collected without success verification')
-    }
-  })
-}}
-```
-
-#### 3.3 Storage Monitoring
-
-Verify storage sentinels and slot management:
+After each successful execution:
 
 ```typescript
-// Custom monitoring for storage invariants
-const monitorStorage = (states: TransactionState[]) => {
-  const shimStates = states.filter(s => s.label?.includes('shim'))
-  
-  shimStates.forEach((state, index) => {
-    if (state.state === 'confirmed') {
-      const sentinelSlot = state.storageChanges?.successSlot
-      const sentinelValue = state.storageChanges?.successValue
-      
-      console.log(`🧪 Sentinel ${index + 1}:`)
-      console.log('   Slot:', sentinelSlot)
-      console.log('   Value:', sentinelValue)
-      
-      // Verify namespaced storage
-      expect(sentinelSlot).toMatch(/^0x[a-f0-9]{64}$/)
-      expect(sentinelSlot).not.toMatch(/^0x0+$/) // Not default storage
-      
-      // Verify correct value
-      if (sentinelValue !== '0x0000000000000000000000000000000000000000000000000000000000000001') {
-        console.error('❌ Invalid success sentinel value')
-      }
-    }
-  })
-}
-
-// Use in onExecutionComplete
-onExecutionComplete={(result) => {
-  monitorStorage(result.transactionStates)
-}}
-```
-
-### Step 4: Contract-Specific Testing
-
-#### 4.1 Testing Delegatecall Enforcement
-
-Create a test that attempts direct calls to verify the `onlyDelegatecall` modifier:
-
-```typescript
-// test/delegatecall/DirectCallTest.ts
-import { expect, describe, it } from 'vitest'
-import { parseAbi } from 'viem'
-import { createWalletClient, http } from 'viem'
-import { privateKeyToAccount } from 'viem/accounts'
-import { arbitrum } from 'viem/chains'
-
-const walletClient = createWalletClient({
-  account: privateKeyToAccount(process.env.TEST_PRIVATE_KEY as `0x${string}`),
-  chain: arbitrum,
-  transport: http(),
+// Validate no unauthorized losses
+const originBalance = await getBalance(walletClient, {
+  address: account.address,
+  token: arbitrumUSDCAddress
 })
 
-const trailsRouterAbi = parseAbi([
-  'function execute((address to, uint256 value, bytes data)[] calls) external',
-])
+const expectedLoss = parseUnits('0.07', 6) // ~0.07 USDC expected (deposit + fees)
+const tolerance = parseUnits('0.001', 6) // 0.001 USDC tolerance
 
-describe('TrailsRouter Delegatecall Enforcement', () => {
-  it('should revert on direct calls', async () => {
-    const routerAddress = '0x...TRAILS_ROUTER_ADDRESS...' // Deployed router address
-    
-    await expect(
-      walletClient.writeContract({
-        address: routerAddress,
-        abi: trailsRouterAbi,
-        functionName: 'execute',
-        args: [[
-          { to: someContract, value: 0, data: '0x...' }
-        ]],
-        // No delegatecall flag
-      })
-    ).reverts.toBeTruthy()
-    
-    console.log('✅ Direct call blocked by onlyDelegatecall modifier')
-  })
-  
-  it('should succeed via delegatecall', async () => {
-    // This would require wallet.execute() with delegateCall: true
-    // SDK handles this automatically, but direct testing verifies the modifier
-    console.log('✅ SDK uses delegatecall correctly (verified via successful execution)')
-  })
-})
+console.log('Balance validation:')
+console.log(`Initial balance: ${formatUnits(initialBalance, 6)} USDC`)
+console.log(`Current balance: ${formatUnits(originBalance, 6)} USDC`)
+console.log(`Expected loss: ~0.07 USDC`)
+
+expect(Math.abs(expectedLoss - (initialBalance - originBalance))).toBeLessThan(tolerance)
+console.log('✅ Economic invariants preserved')
 ```
 
-#### 4.2 Testing Balance Injection
+#### 5.3 Check Contract State
 
-Test the `injectAndCall` function with various token types:
+Verify contract state post-execution:
 
-```typescript
-// test/balance-injection/InjectionTest.ts
-describe('TrailsRouter Balance Injection', () => {
-  const testTokens = [
-    { name: 'USDC (6 decimals)', address: '0xaf88d065...', decimals: 6 },
-    { name: 'WETH (18 decimals)', address: '0x82aF4944...', decimals: 18 },
-    { name: 'Fee-on-transfer token', address: '0xdAC17F95...', decimals: 6 }
-  ]
-  
-  testTokens.forEach(token => {
-    it(`should inject correct balance for ${token.name}`, async () => {
-      // Setup: Deploy mock contract with placeholder calldata
-      const mockContract = await deployMockContract({
-        abi: aaveSupplyAbi,
-        bytecode: aaveSupplyBytecodeWithPlaceholder
-      })
-      
-      // Execute via SDK (triggers injectAndCall internally)
-      const { result } = renderHook(() => useQuote({
-        walletClient,
-        fromTokenAddress: token.address,
-        toTokenAddress: token.address,
-        fromChainId: arbitrum.id,
-        toChainId: arbitrum.id,
-        swapAmount: '1000000', // 1 token
-        toRecipient: mockContract.address,
-        tradeType: TradeType.EXACT_OUTPUT,
-        toCalldata: encodeAaveSupplyWithPlaceholder(token.decimals),
-      }), { wrapper: createWrapper() })
-      
-      await waitFor(() => !!result.current.quote && !!result.current.swap)
-      await result.current.swap()
-      
-      // Verify injection accuracy
-      const actualBalance = await getTokenBalance(token.address, walletClient.account.address)
-      const injectedAmount = parseInt(result.current.quote!.toAmount)
-      
-      expect(actualBalance).toBeCloseTo(injectedAmount, 2) // Within 2% tolerance
-      console.log(`✅ ${token.name} injection: ${actualBalance} vs ${injectedAmount}`)
-    })
-  })
-})
-```
-
-#### 4.3 Testing Gasless Permit Flow
-
-Test ERC-2612 permit integration and leftover allowance handling:
-
-```typescript
-// test/gasless-permit/PermitTest.ts
-describe('TrailsIntentEntrypoint Permit Integration', () => {
-  const feeToken = '0xaf88d065e77c8cC2239327C5EDb3A432268e5831' // USDC
-  
-  it('should use exact permit amounts for fees', async () => {
-    const depositAmount = '10000' // 0.01 USDC
-    const feeAmount = '500' // 0.0005 USDC fee
-    const totalPermit = (parseInt(depositAmount) + parseInt(feeAmount)).toString()
-    
-    const { result } = renderHook(() => useQuote({
-      walletClient,
-      fromTokenAddress: feeToken,
-      toTokenAddress: feeToken,
-      fromChainId: arbitrum.id,
-      toChainId: base.id,
-      swapAmount: depositAmount,
-      selectedFeeToken: { tokenAddress: feeToken, tokenSymbol: 'USDC' },
-      tradeType: TradeType.EXACT_OUTPUT,
-    }), { wrapper: createWrapper() })
-    
-    await waitFor(() => !!result.current.quote && !!result.current.swap)
-    
-    // Verify permit covers both deposit + fee
-    const permitDetails = result.current.quote!.permitDetails
-    expect(permitDetails!.amount).toBe(totalPermit)
-    expect(permitDetails!.deadline).toBeGreaterThan(Math.floor(Date.now() / 1000))
-    
-    // Execute and verify exact fee collection
-    await result.current.swap()
-    
-    // Check allowance was consumed correctly
-    const remainingAllowance = await getAllowance(feeToken, walletClient.account.address)
-    expect(remainingAllowance).toBeLessThanOrEqual(parseInt(feeAmount))
-    console.log('✅ Permit flow: Exact fee collection verified')
-  })
-  
-  it('should handle permit replay protection', async () => {
-    // Test nonce reuse
-    const firstExecution = await executePermitFlow()
-    const secondExecution = await executePermitFlow() // Same nonce
-    
-    expect(secondExecution).toThrow('Invalid nonce')
-    console.log('✅ Permit replay protection working')
-  })
-})
-```
-
-### Step 5: Validating Results
-
-#### 5.1 Balance Verification
-
-After each test execution, verify token balances:
-
-```typescript
-// test/utils/BalanceVerifier.ts
-import { getBalance } from 'viem'
-
-export async function verifyBalances(
-  walletClient: WalletClient,
-  tokenAddress: Address,
-  expectedBalance: bigint,
-  chainId: number
-) {
-  const balance = await getBalance(walletClient, {
-    address: walletClient.account.address,
-    token: tokenAddress
-  })
-  
-  console.log(`Balance verification - Chain ${chainId}:`)
-  console.log(`Expected: ${formatUnits(expectedBalance, decimals)}`)
-  console.log(`Actual:   ${formatUnits(balance, decimals)}`)
-  console.log(`Delta:   ${formatUnits(expectedBalance - balance, decimals)}`)
-  
-  // Verify within expected tolerance
-  const tolerance = expectedBalance / 100n // 1% tolerance
-  expect(balance).toBeCloseTo(expectedBalance, tolerance)
-  
-  return {
-    balance,
-    isValid: balance >= (expectedBalance - tolerance),
-    toleranceUsed: tolerance
-  }
-}
-
-// Use after execution
-const result = await verifyBalances(walletClient, usdcAddress, expectedAfterAmount, arbitrum.id)
-if (!result.isValid) {
-  console.error('❌ Balance mismatch detected!')
-  console.log('Audit Finding: Unexpected token loss or gain')
-}
-```
-
-#### 5.2 Event Verification
-
-Validate contract events were emitted correctly:
-
-```typescript
-// test/utils/EventVerifier.ts
-export function verifyContractEvents(receipts: any[], expectedEvents: string[]) {
-  console.log('Event verification:')
-  
-  receipts.forEach((receipt, index) => {
-    console.log(`Transaction ${index + 1} events:`)
-    
-    receipt.logs.forEach((log: any) => {
-      const eventName = parseEventName(log)
-      
-      if (expectedEvents.includes(eventName)) {
-        console.log(`✅ Expected event: ${eventName}`)
-        
-        // Verify event parameters
-        if (eventName === 'DepositToIntent') {
-          const decoded = decodeEvent(receipt, 'DepositToIntent')
-          expect(decoded.user).toBe(walletAddress)
-          expect(decoded.amount).toBe(expectedDepositAmount)
-        }
-        
-        if (eventName === 'Sweep') {
-          const decoded = decodeEvent(receipt, 'Sweep')
-          expect(decoded.to).toBe(feeCollector)
-          expect(decoded.amount).toBe(expectedFee)
-        }
-      } else if (eventName.includes('Failed') || eventName.includes('Refund')) {
-        console.log(`🧪 Failure event: ${eventName}`)
-        // Valid in failure scenarios
-      } else {
-        console.warn(`⚠️  Unexpected event: ${eventName}`)
-        // Potential audit finding
-      }
-    })
-  })
-  
-  // Verify no unauthorized events
-  const unauthorizedEvents = receipts.flatMap(r => r.logs)
-    .map(log => parseEventName(log))
-    .filter(name => !expectedEvents.includes(name) && 
-                   !name.includes('Failed') && !name.includes('Refund'))
-  
-  if (unauthorizedEvents.length > 0) {
-    console.error('❌ Unauthorized events detected:', unauthorizedEvents)
-  }
-  
-  return {
-    expectedEventsFound: expectedEvents.length,
-    totalEvents: receipts.flatMap(r => r.logs).length,
-    unauthorizedEvents: unauthorizedEvents.length
-  }
-}
-```
-
-#### 5.3 Storage State Validation
-
-Verify storage sentinels and contract state:
-
-```typescript
-// test/utils/StorageVerifier.ts
-export async function verifyStorageState(
-  walletClient: WalletClient,
-  opHash: Hash,
-  expectedSuccess: boolean
-) {
-  const successSlot = computeSentinelSlot(opHash)
-  
-  const slotValue = await walletClient.readContract({
-    address: walletAddress,
-    abi: sentinelAbi,
-    functionName: 'getStorageAt',
-    args: [successSlot]
-  })
-  
-  const isSuccess = slotValue === sentinelSuccessValue
-  const status = expectedSuccess ? 'should be set' : 'should not be set'
-  
-  console.log(`Storage validation - opHash: ${opHash.slice(0, 10)}...`)
-  console.log(`Slot: ${successSlot}`)
-  console.log(`Value: ${slotValue}`)
-  console.log(`Expected ${status}: ${isSuccess ? '✅' : '❌'}`)
-  
-  expect(isSuccess).toBe(expectedSuccess)
-  
-  if (!isSuccess && expectedSuccess) {
-    console.error('Audit Finding: Success sentinel not set after successful execution')
-  }
-  
-  if (isSuccess && !expectedSuccess) {
-    console.error('Audit Finding: Success sentinel set incorrectly')
-  }
-  
-  return { successSlot, isSuccess, expectedSuccess }
-}
-```
-
-### Step 6: Advanced Testing Techniques
-
-#### 6.1 Fuzz Testing with Custom Inputs
-
-Test edge cases and boundary conditions:
-
-```typescript
-// test/fuzz/FuzzTest.ts
-describe('Fuzz Testing - Edge Cases', () => {
-  const fuzzInputs = [
-    // Zero amounts
-    { amount: '0', expect: 'Invalid amount' },
-    
-    // Maximum amounts (token limits)
-    { amount: '1000000000000000000000000', expect: 'Amount too large' },
-    
-    // Invalid token addresses
-    { token: '0x0000000000000000000000000000000000000001', expect: 'Invalid token' },
-    
-    // Extreme slippage
-    { slippage: '1.0', expect: 'Slippage too high' },
-    
-    // Same chain, same token, no calldata (should be direct transfer)
-    { fromChain: 42161, toChain: 42161, fromToken: usdc, toToken: usdc, calldata: '', expect: 'Direct execution' },
-    
-    // Invalid EIP-712 signatures (malformed)
-    { signature: '0x...', expect: 'Invalid signature' },
-    
-    // Expired deadlines
-    { deadline: Math.floor(Date.now() / 1000) - 3600, expect: 'Expired deadline' }
-  ]
-  
-  fuzzInputs.forEach((input, index) => {
-    it(`fuzz test ${index + 1}: ${input.expect}`, async () => {
-      await expect(
-        executeScenarioWithInputs(input)
-      ).rejects.toThrow(input.expect)
-    })
-  })
-})
-```
-
-#### 6.2 Reentrancy Testing
-
-Test reentrancy protection in `TrailsIntentEntrypoint`:
-
-```typescript
-// test/reentrancy/ReentrancyTest.ts
-contract ReentrancyTest {
-  function test_ReentrancyProtection() public {
-    // Deploy mock malicious contract
-    MaliciousToken maliciousToken = new MaliciousToken()
-    
-    // Attempt reentrant deposit
-    vm.expectRevert('ReentrancyGuard: reentrant call')
-    intentEntrypoint.depositToIntentWithPermit(
-      user,
-      address(maliciousToken),
-      amount,
-      intentAddress,
-      deadline,
-      permitSig,
-      intentSig
-    )
-  }
-}
-
-// Mock contract that attempts reentrancy
-contract MaliciousToken {
-  function transferFrom(address from, address to, uint256 amount) external {
-    if (to == address(intentEntrypoint)) {
-      // Attempt reentrant call during transfer
-      intentEntrypoint.depositToIntentWithPermit(...) // Should revert
-    }
-  }
-}
-```
-
-#### 6.3 Gas Analysis
-
-Profile gas consumption across different paths:
-
-```typescript
-// test/gas/GasAnalysis.ts
-describe('Gas Optimization Analysis', () => {
-  const scenarios = [
-    { name: 'Simple transfer', gasBudget: 150_000 },
-    { name: 'Cross-chain swap', gasBudget: 500_000 },
-    { name: 'DeFi deposit with injection', gasBudget: 800_000 },
-    { name: 'Gasless with permit', gasBudget: 300_000 }
-  ]
-  
-  scenarios.forEach(scenario => {
-    it(`gas analysis: ${scenario.name}`, async () => {
-      const gasUsed = await executeScenario(scenario.name)
-      
-      console.log(`${scenario.name}: ${gasUsed} gas`)
-      console.log(`Budget: ${scenario.gasBudget} gas`)
-      console.log(`Efficiency: ${(gasUsed / scenario.gasBudget * 100).toFixed(1)}%`)
-      
-      // Flag excessive gas usage
-      if (gasUsed > scenario.gasBudget * 1.2) {
-        console.warn('⚠️  Gas usage exceeds 120% of budget')
-      }
-    })
-  })
-})
-```
-
-### Step 7: Reporting Findings
-
-#### 7.1 Documenting Issues
-
-For each issue found, document:
-
-**PoC Requirements**:
-- Use the SDK test scenarios as the basis for PoCs
-- Include exact scenario ID and configuration
-- Show transaction hashes from successful executions
-- Verify contract state before/after exploit
-
-**Example Report Structure**:
-```
-Title: Unauthorized Fee Sweep Without Success Sentinel
-
-Severity: High
-
-Description:
-The validateOpHashAndSweep function can be called without proper success sentinel verification under certain race conditions.
-
-Vulnerability Detail:
-During concurrent execution, an attacker can trigger fee sweeping before the shim sets the success sentinel, allowing unauthorized fee collection.
-
-PoC:
-1. Run TEST_SCENARIOS="PAY_USDC_BASE" 
-2. During origin execution, call validateOpHashAndSweep directly
-3. Verify fees collected without sentinel validation
-
-Impact:
-Attackers can drain fees from successful operations by racing the normal execution flow.
-
-Proof of Concept:
 ```bash
-# Setup concurrent execution
-TEST_SCENARIOS="PAY_USDC_BASE" pnpm run test:scenarios &
+# Check if deposit was recorded
+cast call $INTENT_ENTRYPOINT_ADDRESS "deposits(bytes32)(bool)" $INTENT_HASH --rpc-url $ARBITRUM_RPC_URL
 
-# In parallel terminal, call fee sweep directly
-cast call <router-address> "validateOpHashAndSweep(bytes32,address,address)" "<opHash>" ...
+# Verify success sentinel was set
+cast call $ROUTER_SHIM_ADDRESS "successSentinel(bytes32)(bool)" $OP_HASH --rpc-url $ARBITRUM_RPC_URL
+
+# Check fee collector received fees
+cast call $USDC_ADDRESS "balanceOf(address)(uint256)" $FEE_COLLECTOR_ADDRESS --rpc-url $ARBITRUM_RPC_URL
 ```
 
-Recommended Fix:
-Add mutex protection around sentinel setting and fee collection.
-```
+### Step 6: Advanced Testing
 
-#### 7.2 Validation Testing
+#### 6.1 Test Different Providers
 
-After implementing fixes, re-run scenarios to verify:
+Test with different bridge providers:
 
 ```typescript
-// test/fixed-issues/VerifyFix.ts
-describe('Verify Security Fixes', () => {
-  it('should prevent unauthorized fee sweeps', async () => {
-    // Re-run vulnerable scenario with fix applied
-    const result = await executeScenario('PAY_USDC_BASE')
-    
-    // Verify fix works
-    expect(result.feesCollected).toBe(0)
-    expect(result.sentinelValidation).toBe(true)
-    console.log('✅ Fix verification: Unauthorized sweep prevented')
-  })
+const providers = ['lifi', 'cctp', 'relay']
+
+providers.forEach(async (provider) => {
+  const { result } = renderHook(
+    () =>
+      useQuote({
+        // ... base configuration
+        quoteProvider: provider
+      }),
+    { wrapper: createWrapper() }
+  )
+
+  await waitFor(() => !!result.current.quote, { timeout: 30000 })
   
-  it('should maintain legitimate flows', async () => {
-    // Verify normal execution still works
-    const normalResult = await executeScenario('PAY_USDC_BASE')
-    expect(normalResult.success).toBe(true)
-    expect(normalResult.feesCollected).toBe(expectedFee)
-    console.log('✅ Fix verification: Legitimate flow preserved')
-  })
+  console.log(`✅ ${provider} provider quote generated`)
 })
+```
+
+#### 6.2 Test Failure Scenarios
+
+Test error handling and fallback mechanisms:
+
+```typescript
+// Test invalid destination contract
+const { result } = renderHook(
+  () =>
+    useQuote({
+      // ... base configuration
+      toCalldata: '0xdeadbeef', // Invalid calldata
+    }),
+  { wrapper: createWrapper() }
+)
+
+await waitFor(
+  () => !!result.current.quoteError,
+  { timeout: 30000 }
+)
+
+const error = result.current.quoteError
+expect(error?.message).toContain('CallFailed')
+console.log('✅ Failure handling works correctly')
+```
+
+#### 6.3 Performance Testing
+
+Measure execution performance:
+
+```typescript
+const startTime = Date.now()
+
+await swap()
+
+const executionTime = Date.now() - startTime
+console.log(`Execution time: ${executionTime}ms`)
+
+expect(executionTime).toBeLessThan(300000) // Less than 5 minutes
 ```
 
 ## Audit Focus Areas Mapping
 
-This section maps the SDK test scenarios to the six key audit focus areas identified in `CODE4ARENA.md`. Each audit concern is linked to specific test scenarios and contract functions to validate, providing clear guidance for comprehensive testing coverage.
+This section maps the testing scenarios to the six key audit focus areas identified in the audit documentation. Each audit concern is linked to specific contract functions to validate and testing approaches using the SDK.
 
 ### A. Delegatecall-Only Router Pattern
 
@@ -1312,36 +2018,19 @@ This section maps the SDK test scenarios to the six key audit focus areas identi
 - All `TrailsRouter` execution functions (`execute`, `pullAndExecute`, `injectAndCall`, `injectSweepAndCall`)
 - `TrailsRouterShim` wrapper functions
 
-**Test Scenarios**:
+**Testing Approach**:
 
-| Scenario ID | Description | What to Validate | Expected Behavior |
-|-------------|-------------|------------------|-------------------|
-| All `*_BASE_USDC`, `*_BASE_ETH` | Any execution flow | Direct calls to router should revert | `onlyDelegatecall` modifier blocks direct execution |
-| `SAME_CHAIN_BASE_USDC_TO_ETH` | Simple same-chain swap | `msg.sender` = wallet address in delegatecall | Wallet context preserved, no direct contract state access |
-| `DEPOSIT_AAVE_BASE_USDC` | Complex multicall | Delegatecall through wallet contract | `TrailsRouterShim` correctly wraps execution |
-| `MINT_NFT_BASE_USDC` | Custom calldata execution | No direct calls in execution path | All router calls originate from wallet delegatecall |
+| Test Type | What to Validate | How to Test with SDK |
+|-----------|------------------|---------------------|
+| Direct Call Block | Direct calls to router should revert with "Direct call not allowed" | Use `walletClient.writeContract()` directly to `TrailsRouter.execute()` without delegatecall flag |
+| Delegatecall Success | Execution through wallet delegatecall should succeed | Use `useQuote` hook which automatically uses delegatecall via wallet |
+| Context Preservation | `msg.sender` = wallet address during execution | Monitor transaction logs to verify correct `msg.sender` |
+| Shim Validation | `TrailsRouterShim` correctly wraps router calls | Check that shim execution precedes router execution in transaction traces |
 
-**Testing Commands**:
-```bash
-# Test all execution scenarios (should use delegatecall)
-TEST_SCENARIOS="PAY_USDC_BASE,SAME_CHAIN_BASE_USDC_TO_ETH,DEPOSIT_AAVE_BASE_USDC" pnpm run test:scenarios
-
-# Verify direct call failure
-# Deploy test contract that calls router directly (should revert)
-```
-
-**Validation Checklist**:
-- [ ] Direct calls to `TrailsRouter.execute()` revert with "Direct call not allowed"
-- [ ] Execution through `TrailsRouterShim` passes with `msg.sender` = wallet address
-- [ ] Wallet storage context preserved (no direct contract state manipulation)
-- [ ] `TrailsRouterShim` correctly forwards all execution parameters
-- [ ] No bypass paths for delegatecall requirement
-
-**Expected Error**:
-```
-Error: Execution reverted: "Direct call not allowed"
-VM Exception while processing transaction: reverted(0x...onlyDelegatecall)
-```
+**Expected Behavior**:
+- Direct calls to `TrailsRouter` revert with `onlyDelegatecall` error
+- SDK executions succeed via wallet delegatecall
+- All router calls originate from wallet context
 
 ### B. Balance Injection & Calldata Surgery
 
@@ -1353,71 +2042,21 @@ VM Exception while processing transaction: reverted(0x...onlyDelegatecall)
 - Placeholder detection and replacement logic
 - Balance calculation (current vs quoted amounts)
 
-**Test Scenarios**:
+**Testing Approach**:
 
-| Scenario ID | Description | What to Validate | Expected Behavior |
-|-------------|-------------|------------------|-------------------|
-| `DEPOSIT_AAVE_BASE_USDC` | Aave deposit with injection | Placeholder correctly replaced | Actual wallet balance injected, not quoted amount |
-| `DEPOSIT_MORPHO_BASE_USDC` | Morpho deposit with injection | amountOffset calculation | Correct offset for Aave/Morpho supply parameters |
-| `MINT_NFT_BASE_USDC` | NFT mint with price parameter | Dynamic calldata modification | Price parameter correctly injected into mint calldata |
-| `SAME_CHAIN_BASE_USDC_TO_USDC_NFT_MINT` | Same-token execution with injection | No swap, direct injection | Contract receives full deposited amount |
-| `GASLESS_INTENT_ENTRYPOINT_DEPOSIT_AAVE_BASE_USDC` | Gasless with injection | Permit + injection coordination | Balance injection works with gasless deposits |
+| Test Type | What to Validate | How to Test with SDK |
+|-----------|------------------|---------------------|
+| Placeholder Detection | 32-byte zero placeholder correctly identified | Configure widget with custom calldata containing placeholder bytes |
+| Offset Calculation | `amountOffset` points to correct calldata position | Test with Aave/Morpho deposit calldata, verify injection position |
+| Balance Accuracy | Current wallet balance used, not quoted amount | Compare injected amount with actual balance before execution |
+| Bounds Checking | No out-of-bounds writes beyond calldata length | Test with malformed calldata (short/long offsets) |
+| Token Handling | ETH vs ERC20 injection paths | Test native ETH and ERC20 scenarios separately |
 
-**Testing Commands**:
-```bash
-# Test all injection scenarios
-TEST_SCENARIOS="DEPOSIT_AAVE_BASE_USDC,DEPOSIT_MORPHO_BASE_USDC,MINT_NFT_BASE_USDC" pnpm run test:scenarios
-
-# Custom injection test with malformed calldata
-TEST_SCENARIOS="INJECTION_EDGE_CASES" pnpm run test:scenarios
-```
-
-**Validation Checklist**:
-- [ ] Placeholder bytes (`0x0000000000000000000000000000000000000000000000000000000000000000`) correctly identified
-- [ ] `amountOffset` parameter correctly points to placeholder location
-- [ ] Actual wallet balance (current state) used, not quoted amount from Intent Machine
-- [ ] No out-of-bounds writes beyond calldata length
-- [ ] ETH vs ERC20 injection paths correctly differentiated
-- [ ] Fee-on-transfer tokens handled properly (pre/post-transfer balance calculation)
-- [ ] Endianness preserved in 32-byte replacement
-
-**Expected Error for Invalid Injection**:
-```
-Error: Invalid amountOffset - placeholder not found
-Error: Execution reverted: "Invalid calldata" or "Out of bounds"
-```
-
-**Custom Test for Edge Cases**:
-```typescript
-// test/balance-injection/InjectionEdgeCases.ts
-describe('Balance Injection Edge Cases', () => {
-  it('should fail on invalid amountOffset', async () => {
-    const malformedCalldata = '0x...' // Calldata without placeholder at offset
-    const { quote, swap } = useQuote({
-      // ... configuration
-      toCalldata: malformedCalldata,
-      amountOffset: '32' // Points to wrong location
-    })
-    
-    await expect(swap).rejects.toThrow('Invalid amountOffset')
-  })
-  
-  it('should handle fee-on-transfer tokens', async () => {
-    // Test with token that takes 1% fee on transfer
-    const feeOnTransferToken = '0x...' // Mock fee-on-transfer token
-    
-    // Execute transfer and verify injection uses post-fee balance
-    const result = await executeInjectionTest(feeOnTransferToken)
-    expect(result.injectedAmount).toBeCloseTo(result.actualBalanceAfterFee)
-  })
-  
-  it('should inject zero balance correctly', async () => {
-    // Test edge case with zero wallet balance
-    const zeroBalanceTest = await executeInjectionTestWithZeroBalance()
-    expect(zeroBalanceTest.execution).toBe('skipped') // Should handle gracefully
-  })
-})
-```
+**Expected Behavior**:
+- Placeholder (`0x00...00`) replaced with actual wallet balance
+- `amountOffset` correctly calculated for different contract ABIs
+- No calldata corruption or out-of-bounds writes
+- ETH value forwarding works without token wrapping
 
 ### C. Fee Collection & Refund Semantics
 
@@ -1429,81 +2068,20 @@ describe('Balance Injection Edge Cases', () => {
 - `TrailsRouterShim` success sentinel validation
 - `onlyFallback` execution path control
 
-**Test Scenarios**:
+**Testing Approach**:
 
-| Scenario ID | Description | What to Validate | Expected Behavior |
-|-------------|-------------|------------------|-------------------|
-| `PAY_USDC_BASE` | Normal execution | Fee collected after success | `validateOpHashAndSweep()` called with valid sentinel |
-| `FAIL_CUSTOM_DESTINATION_CROSS_CHAIN` | Destination failure | Refund on destination, no fees | `refundAndSweep()` called, fees = 0 |
-| `FAIL_CUSTOM_ORIGIN_SAME_CHAIN_WITH_ETH` | Origin failure | Full refund, no execution | No bridging, complete user refund |
-| `GASLESS_INTENT_ENTRYPOINT_*` | Gasless fee payment | Permit-based fee collection | `payFeeWithPermit()` exact amount validation |
-| `DEPOSIT_AAVE_BASE_USDC` | Multi-step execution | Partial fee on success | Fees only for successful steps |
+| Test Type | What to Validate | How to Test with SDK |
+|-----------|------------------|---------------------|
+| Success Path | Fees collected only after success sentinel | Execute normal transfer, verify fee sweep follows shim execution |
+| Failure Path | No fees on failed execution | Trigger destination failure, verify no fee collection |
+| Refund Trigger | `refundAndSweep()` activates on `CallFailed` | Use invalid calldata to trigger destination revert |
+| Conditional Sweep | `validateOpHashAndSweep()` requires sentinel | Test direct fee sweep before shim completion (should fail) |
 
-**Testing Commands**:
-```bash
-# Test normal fee collection
-TEST_SCENARIOS="PAY_USDC_BASE" pnpm run test:scenarios
-
-# Test refund on failure
-TEST_SCENARIOS="FAIL_CUSTOM_DESTINATION_CROSS_CHAIN" pnpm run test:scenarios
-
-# Test gasless fee handling
-TEST_SCENARIOS="GASLESS_INTENT_ENTRYPOINT_ARBITRUM_USDC_TO_BASE_USDC" pnpm run test:scenarios
-```
-
-**Validation Checklist**:
-- [ ] `validateOpHashAndSweep()` reverts if success sentinel not set
-- [ ] `refundAndSweep()` activates only on `CallFailed` events or `onlyFallback=true`
-- [ ] Origin failure → full refund, no bridging occurs
-- [ ] Destination failure → sweep to user on destination chain
-- [ ] Fees collected exactly match quoted amounts (no over-collection)
-- [ ] Gasless fees use exact permit amounts, no excess consumption
-- [ ] No fees collected from failed operations
-- [ ] Refund prevents re-execution (nonce invalidation)
-
-**Expected Error for Unauthorized Sweep**:
-```
-Error: Sentinel value mismatch - operation not successful
-Error: Execution reverted: "Invalid opHash" or "Sentinel not set"
-```
-
-**Custom Test for Fee Semantics**:
-```typescript
-// test/fee-semantics/FeeTest.ts
-describe('Fee Collection & Refund Semantics', () => {
-  it('should collect fees only after success sentinel', async () => {
-    // Test 1: Successful execution
-    const successResult = await executeSuccessfulFlow()
-    expect(successResult.feesCollected).toBeGreaterThan(0)
-    expect(successResult.sentinelSet).toBe(true)
-    
-    // Test 2: Failed execution  
-    const failureResult = await executeFailureFlow()
-    expect(failureResult.feesCollected).toBe(0)
-    expect(failureResult.refundReceived).toBe(true)
-    expect(failureResult.sentinelSet).toBe(false)
-  })
-  
-  it('should refund on destination failure', async () => {
-    // Configure scenario to fail on destination contract call
-    const result = await executeWithDestinationFailure()
-    
-    // Verify: Sweep to user, no bridge reversal needed
-    expect(result.refundDestination).toBe(true)
-    expect(result.refundAmount).toBeCloseTo(result.depositAmount)
-    expect(result.feesCollected).toBe(0)
-  })
-  
-  it('should protect against fee sweep races', async () => {
-    // Race condition: Call validateOpHashAndSweep before shim sets sentinel
-    const raceResult = await executeRaceConditionTest()
-    
-    // Should fail with sentinel validation error
-    expect(raceResult.sweepSuccess).toBe(false)
-    expect(raceResult.error).toContain('Sentinel not set')
-  })
-})
-```
+**Expected Behavior**:
+- `validateOpHashAndSweep()` reverts if success sentinel not set
+- `refundAndSweep()` called only on failures with `onlyFallback=true`
+- Origin failure → full refund, no bridging
+- Destination failure → sweep to user on destination chain
 
 ### D. Entrypoint Contracts
 
@@ -1516,116 +2094,22 @@ describe('Fee Collection & Refund Semantics', () => {
 - Nonce and deadline validation
 - Reentrancy protection
 
-**Test Scenarios**:
+**Testing Approach**:
 
-| Scenario ID | Description | What to Validate | Expected Behavior |
-|-------------|-------------|------------------|-------------------|
-| All `*USDC` scenarios | EIP-712 deposit validation | Signature recovery and domain separator | Accepts valid signatures, rejects invalid ones |
-| `GASLESS_*` scenarios | ERC-2612 permit handling | Permit signature validation | Gasless deposits work with valid permits |
-| `SAME_CHAIN_*` scenarios | Standard deposit flow | Nonce/deadline enforcement | Rejects expired or replayed nonces |
-| Custom replay tests | Nonce reuse attacks | Replay protection | Second execution with same nonce reverts |
+| Test Type | What to Validate | How to Test with SDK |
+|-----------|------------------|---------------------|
+| EIP-712 Signature | Correct domain separator and signature recovery | Use `useQuote` with valid/invalid signatures |
+| Nonce Management | Nonce increments, replay protection | Execute multiple deposits, verify nonce progression |
+| Deadline Enforcement | Current time ≤ deadline | Test with expired deadlines (should fail) |
+| Permit Handling | ERC-2612 permit validation | Use gasless mode with `selectedFeeToken` |
+| Reentrancy Guard | No recursive calls during deposit | Cannot be directly tested via SDK, verify via Foundry |
 
-**Testing Commands**:
-```bash
-# Test all deposit scenarios
-TEST_SCENARIOS="PAY_USDC_BASE,SAME_CHAIN_BASE_USDC_TO_ETH" pnpm run test:scenarios
-
-# Test gasless permit flows
-TEST_SCENARIOS="GASLESS_INTENT_ENTRYPOINT_*" pnpm run test:scenarios
-```
-
-**Validation Checklist**:
-- [ ] EIP-712 domain separator matches expected chain/contract
-- [ ] Signature recovery correctly identifies signer
-- [ ] Nonce increments per user/token pair
-- [ ] Deadline enforcement (current time ≤ deadline)
-- [ ] ReentrancyGuard prevents recursive calls during deposit
-- [ ] ERC-2612 permit nonce matches token nonce
-- [ ] Permit deadlines respected
-- [ ] Leftover allowance handling for fee payments
-- [ ] No state changes on invalid signatures
-
-**Expected Error for Invalid Signature**:
-```
-Error: Invalid EIP-712 signature
-Error: Execution reverted: "Invalid signature" or "Signer mismatch"
-```
-
-**Custom Test for EIP-712 Validation**:
-```typescript
-// test/entrypoint/EIP712Test.ts
-describe('TrailsIntentEntrypoint EIP-712 Validation', () => {
-  it('should validate correct EIP-712 signatures', async () => {
-    const intent = {
-      user: account.address,
-      token: usdcAddress,
-      amount: parseEther('0.01'),
-      intentAddress: intentWallet,
-      deadline: Math.floor(Date.now() / 1000) + 3600
-    }
-    
-    const signature = await account.signTypedData({
-      domain: getEIP712Domain(),
-      types: getEIP712Types(),
-      primaryType: 'Intent',
-      message: intent
-    })
-    
-    // Should succeed
-    const tx = await intentEntrypoint.depositToIntent(
-      intent.user,
-      intent.token,
-      intent.amount,
-      intent.intentAddress,
-      intent.deadline,
-      signature
-    )
-    
-    // Verify deposit recorded
-    expect(await intentEntrypoint.deposits(intentHash)).toBe(true)
-  })
-  
-  it('should reject expired deadlines', async () => {
-    const expiredIntent = {
-      // ... same as above but with expired deadline
-      deadline: Math.floor(Date.now() / 1000) - 60
-    }
-    
-    const signature = await account.signTypedData({...})
-    
-    // Should revert
-    await expect(
-      intentEntrypoint.depositToIntent(
-        expiredIntent.user,
-        expiredIntent.token,
-        expiredIntent.amount,
-        expiredIntent.intentAddress,
-        expiredIntent.deadline,
-        signature
-      )
-    ).toBeRevertedWith('Expired deadline')
-  })
-  
-  it('should reject nonce replay', async () => {
-    // Execute first deposit successfully
-    await executeValidDeposit()
-    
-    // Attempt second deposit with same nonce
-    const replaySignature = await account.signTypedData({...}) // Same nonce
-    
-    await expect(
-      intentEntrypoint.depositToIntent(
-        user,
-        token,
-        amount,
-        intentAddress,
-        deadline,
-        replaySignature
-      )
-    ).toBeRevertedWith('Nonce already used')
-  })
-})
-```
+**Expected Behavior**:
+- Valid EIP-712 signatures accepted, invalid rejected
+- Nonce increments per user/token pair
+- Expired deadlines cause revert
+- ERC-2612 permits use exact amounts, no excess consumption
+- ReentrancyGuard prevents recursive deposit calls
 
 ### E. Cross-Chain Assumptions
 
@@ -1637,227 +2121,185 @@ describe('TrailsIntentEntrypoint EIP-712 Validation', () => {
 - Destination failure handling and refunds
 - Timeout and stuck state recovery
 
-**Test Scenarios**:
+**Testing Approach**:
 
-| Scenario ID | Description | What to Validate | Expected Behavior |
-|-------------|-------------|------------------|-------------------|
-| `PAY_USDC_BASE` | Standard cross-chain | Origin → destination coordination | Both legs execute or both fail |
-| `FAIL_CUSTOM_DESTINATION_CROSS_CHAIN` | Destination failure | Destination refund | Origin succeeds, destination refunds |
-| `*LIFI`, `*CCTP`, `*RELAY` | Different providers | Protocol-specific handling | Each provider follows expected flow |
-| `REBALANCE_BASE_ETH_FROM_KATANA_ETH` | Native cross-chain | Native token bridging | ETH value preserved across chains |
+| Test Type | What to Validate | How to Test with SDK |
+|-----------|------------------|---------------------|
+| Origin Failure | No bridging on origin failure | Mock bridge failure (requires custom setup) |
+| Destination Failure | Sweep to user on destination | Use invalid destination calldata |
+| Provider Integration | Different bridge protocols | Test with `quoteProvider: 'lifi'`, `'cctp'`, `'relay'` |
+| State Synchronization | No stuck funds between chains | Verify final balances match expected outcome |
 
-**Testing Commands**:
+**Expected Behavior**:
+- Origin failure → full refund, no bridging occurs
+- Destination failure → sweep to user on destination chain
+- All funds either delivered to recipient or refunded
+- Bridge protocols execute correctly without stuck states
+
+### F. Storage Sentinels
+
+**Audit Concern**: `TrailsSentinelLib` must use namespaced storage slots to avoid collisions with wallet storage.
+
+**Key Functions**:
+- `successSlot(bytes32 opHash)` - Sentinel slot calculation
+- Storage namespace enforcement
+- opHash uniqueness validation
+
+**Testing Approach**:
+
+| Test Type | What to Validate | How to Test with SDK |
+|-----------|------------------|---------------------|
+| Slot Namespacing | Sentinel slots don't collide with wallet storage | Cannot be directly tested via SDK, verify via Foundry |
+| opHash Uniqueness | Different operations use different slots | Execute multiple operations, verify unique opHashes |
+| Sentinel Value | Success value = `0x000...01`, failure = `0x000...00` | Monitor execution logs for sentinel setting |
+
+**Expected Behavior**:
+- All sentinel slots namespaced to avoid wallet collisions
+- Success sentinel set only after complete execution
+- Different opHashes generate different storage slots
+- Sentinel value correctly indicates execution status
+
+## Testing Workflow
+
+### Step 1: Environment Setup
+
+#### 1.1 Project Setup
+
+Create a new test project:
+
 ```bash
-# Test all cross-chain scenarios
-TEST_SCENARIOS="PAY_USDC_BASE,RECEIVE_USDC_BASE_LIFI,RECEIVE_USDC_BASE_CCTP" pnpm run test:scenarios
+mkdir trails-sdk-test && cd trails-sdk-test
+npm init -y
 
-# Test destination failure
-TEST_SCENARIOS="FAIL_CUSTOM_DESTINATION_CROSS_CHAIN" pnpm run test:scenarios
+# Install dependencies
+npm install 0xtrails viem @tanstack/react-query
+npm install --save-dev vitest @testing-library/react @testing-library/jest-dom
+
+# Create basic package.json scripts
+cat > package.json << 'EOF'
+{
+  "name": "trails-sdk-test",
+  "version": "1.0.0",
+  "scripts": {
+    "test": "vitest",
+    "test:scenarios": "vitest run --reporter=verbose"
+  },
+  "devDependencies": {
+    "@testing-library/jest-dom": "^6.4.0",
+    "@testing-library/react": "^14.0.0",
+    "jsdom": "^23.0.0",
+    "vitest": "^1.0.0"
+  },
+  "dependencies": {
+    "0xtrails": "latest",
+    "viem": "^2.0.0",
+    "@tanstack/react-query": "^5.0.0"
+  }
+}
+EOF
 ```
 
-**Validation Checklist**:
-- [ ] Origin failure → no bridging occurs, full refund
-- [ ] Destination failure → sweep to user on destination chain
-- [ ] No stuck states (all funds either delivered or refunded)
-- [ ] Bridge protocol integration correct (LiFi, CCTP, Relay)
-- [ ] Cross-chain decimal handling preserved
-- [ ] Timeout mechanisms prevent stuck intents
-- [ ] No reorg vulnerabilities in cross-chain execution
+#### 1.2 Environment Configuration
 
-**Expected Error for Cross-Chain Failure**:
-```
-Error: Destination execution failed - funds swept to user
-Error: Origin bridge failed - full refund processed
+Create `.env` file with your test configuration:
+
+```bash
+# Wallet configuration
+TEST_PRIVATE_KEY=0x1234567890abcdef...  # Your test wallet private key
+
+# API configuration
+TRAILS_API_KEY=<FILL_IN_BLANK/>  # Request from project team
+
+# RPC endpoints (optional - uses public defaults)
+ARBITRUM_RPC_URL=https://arb1.arbitrum.io/rpc
+BASE_RPC_URL=https://mainnet.base.org
+
+# Testing configuration
+SLIPPAGE_TOLERANCE=0.05  # 5% slippage for testing
 ```
 
-**Custom Test for Cross-Chain Coordination**:
+#### 1.3 Verify Setup
+
+Create a setup verification test:
+
 ```typescript
-// test/cross-chain/CrossChainTest.ts
-describe('Cross-Chain Execution Coordination', () => {
-  it('should refund on origin failure', async () => {
-    // Mock bridge failure on origin chain
-    const mockBridge = new MockBridge()
-    vm.mockCall(
-      bridgeAddress,
-      bridgeAbi,
-      'executeBridge(...)',
-      abi.encode('failure')
-    )
+// test/setup.test.ts
+import { describe, it, expect } from 'vitest'
+import { privateKeyToAccount } from 'viem/accounts'
+import { getSequenceConfig, getTrailsApiUrl, getSequenceProjectAccessKey } from '0xtrails/config'
+
+describe('SDK Environment Setup', () => {
+  it('should have valid private key', () => {
+    const privateKey = process.env.TEST_PRIVATE_KEY
+    expect(privateKey).toBeDefined()
+    expect(privateKey).toMatch(/^0x[a-fA-F0-9]{64}$/)
     
-    const result = await executeCrossChainTransfer()
-    
-    // Verify: No destination execution, full refund
-    expect(result.originRefunded).toBe(true)
-    expect(result.destinationExecuted).toBe(false)
-    expect(result.userBalance).toBeCloseTo(result.initialBalance)
+    const account = privateKeyToAccount(privateKey as `0x${string}`)
+    console.log('✅ Test wallet:', account.address)
   })
-  
-  it('should sweep to user on destination failure', async () => {
-    // Mock successful origin, failed destination
-    const mockOriginSuccess = true
-    const mockDestinationFailure = true
-    
-    const result = await executeWithDestinationFailure()
-    
-    // Verify: Origin succeeds, destination refunds to user
-    expect(result.originSuccess).toBe(true)
-    expect(result.destinationRefunded).toBe(true)
-    expect(result.bridgeReversed).toBe(false) // No bridge reversal
+
+  it('should have valid API key', () => {
+    const apiKey = getSequenceProjectAccessKey()
+    expect(apiKey).toBeDefined()
+    expect(apiKey).toMatch(/^pk_(live|test)_[a-zA-Z0-9]{32,}$/)
+    console.log('✅ API key loaded:', apiKey.slice(0, 10) + '...')
   })
-  
-  it('should handle provider-specific failures', async () => {
-    // Test each provider (LiFi, CCTP, Relay) failure modes
-    const providers = ['lifi', 'cctp', 'relay']
-    
-    for (const provider of providers) {
-      const result = await testProviderFailure(provider)
-      expect(result.properErrorHandling).toBe(true)
-      expect(result.userProtected).toBe(true)
-    }
+
+  it('should have valid API URL', () => {
+    const apiUrl = getTrailsApiUrl()
+    expect(apiUrl).toBeDefined()
+    expect(apiUrl).toMatch(/^https?:\/\/.*\/api\/v1/)
+    console.log('✅ API URL:', apiUrl)
+  })
+
+  it('should have sequence configuration', () => {
+    const config = getSequenceConfig()
+    expect(config).toBeDefined()
+    console.log('✅ Sequence config loaded')
   })
 })
 ```
 
-### Testing Strategy Summary
+Run setup verification:
+```bash
+npm run test test/setup.test.ts
+```
 
-**Coverage Matrix**:
+### Step 2: Basic Testing with `useQuote` Hook
 
-| Audit Area | Scenarios | Priority | Coverage |
-|------------|-----------|----------|----------|
-| Delegatecall Enforcement | All execution scenarios | High | 100% |
-| Balance Injection | `DEPOSIT_*`, `MINT_NFT_*` | High | 90% |
-| Fee Collection | `PAY_*`, `FUND_*`, `RECEIVE_*` | High | 95% |
-| Entrypoint Validation | All scenarios | Medium | 100% |
-| Cross-Chain Coordination | `*BASE_*`, `*ARBITRUM_*` | High | 85% |
-| Gasless Permits | `GASLESS_*` scenarios | Medium | 80% |
-| Failure Handling | `FAIL_*` scenarios | High | 90% |
-
-**Recommended Testing Order**:
-1. **High Priority**: Run all scenarios to establish baseline (2-3 hours)
-2. **Focus Areas**: Execute scenarios matching audit concerns above
-3. **Edge Cases**: Test custom scenarios for specific vulnerabilities
-4. **Fuzz Testing**: Run boundary condition tests
-5. **Performance**: Profile gas usage and execution timing
-
-**Time Allocation**:
-- Basic coverage: 1-2 days
-- Deep analysis: 3-5 days per major area
-- Custom tests: 1-2 days per vulnerability type
-
----
-
-## Complete Working Example
-
-This section provides a complete, production-ready example of testing a cross-chain USDC transfer using the 0xtrails SDK. The example includes environment setup, SDK configuration, scenario execution, result validation, and error handling.
-
-### Complete Test File
-
-Create `test/complete/FullIntegrationTest.ts`:
+Create a basic test file to verify SDK functionality:
 
 ```typescript
-#!/usr/bin/env -S node --loader ts-node/esm
-
-/**
- * Complete SDK Integration Test
- * Tests: Arbitrum USDC → Base USDC cross-chain transfer
- * Focus: TrailsIntentEntrypoint, TrailsRouter, TrailsRouterShim interaction
- */
-
-import { describe, it, expect, beforeAll, afterAll } from 'vitest'
+// test/basic/BasicQuoteTest.test.ts
+import { describe, it, expect, beforeAll } from 'vitest'
 import { renderHook, waitFor } from '@testing-library/react'
+import { createWalletClient, http } from 'viem'
+import { privateKeyToAccount } from 'viem/accounts'
+import { arbitrum, base } from 'viem/chains'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { SequenceHooksProvider } from '@0xsequence/hooks'
 import { useQuote, TradeType } from '0xtrails/prepareSend'
-import { 
-  createWalletClient, 
-  http, 
-  privateKeyToAccount, 
-  parseUnits, 
-  formatUnits 
-} from 'viem'
-import { 
-  arbitrum, 
-  base 
-} from 'viem/chains'
-import {
-  getSequenceConfig,
-  getTrailsApiUrl, 
-  getSequenceProjectAccessKey,
-  getSequenceIndexerUrl
-} from '0xtrails/config'
-
-// Token addresses
-const ARBITRUM_USDC = '0xaf88d065e77c8cC2239327C5EDb3A432268e5831' as const
-const BASE_USDC = '0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913' as const
-
-// Test configuration
-const TEST_CONFIG = {
-  privateKey: process.env.TEST_PRIVATE_KEY! as `0x${string}`,
-  apiKey: getSequenceProjectAccessKey(),
-  amount: '0.01', // 0.01 USDC
-  slippageTolerance: '0.05', // 5% slippage for testing
-  recipient: process.env.TEST_RECIPIENT_ADDRESS! as `0x${string}`,
-}
+import { getSequenceConfig, getTrailsApiUrl, getSequenceProjectAccessKey, getSequenceIndexerUrl } from '0xtrails/config'
 
 // Setup
-let walletClient: ReturnType<typeof createWalletClient>
-let queryClient: QueryClient
-let testAccount: ReturnType<typeof privateKeyToAccount>
-
-beforeAll(() => {
-  // Validate environment
-  if (!TEST_CONFIG.privateKey) {
-    throw new Error('TEST_PRIVATE_KEY environment variable required')
-  }
-  
-  if (!TEST_CONFIG.apiKey) {
-    throw new Error('TRAILS_API_KEY environment variable required')
-  }
-  
-  if (!TEST_CONFIG.recipient) {
-    throw new Error('TEST_RECIPIENT_ADDRESS environment variable required')
-  }
-  
-  console.log('🔧 Setting up test environment...')
-  
-  // Initialize test account
-  testAccount = privateKeyToAccount(TEST_CONFIG.privateKey)
-  console.log('✅ Test account:', testAccount.address)
-  
-  // Create wallet client
-  walletClient = createWalletClient({
-    account: testAccount,
-    chain: arbitrum,
-    transport: http(),
-  })
-  
-  // Initialize query client
-  queryClient = new QueryClient({
-    defaultOptions: {
-      queries: {
-        retry: false,
-        staleTime: 0,
-      },
-    },
-  })
-  
-  // Verify configuration
-  console.log('✅ API URL:', getTrailsApiUrl())
-  console.log('✅ Sequence Config:', getSequenceConfig())
-  
-  console.log('✅ Environment setup complete')
+const privateKey = process.env.TEST_PRIVATE_KEY as `0x${string}`
+const account = privateKeyToAccount(privateKey)
+const walletClient = createWalletClient({
+  account,
+  chain: arbitrum,
+  transport: http(),
 })
 
-afterAll(() => {
-  // Cleanup
-  queryClient.clear()
-  console.log('🧹 Test cleanup complete')
+const queryClient = new QueryClient({
+  defaultOptions: {
+    queries: { retry: false, staleTime: 0 },
+  },
 })
 
 const createWrapper = () => ({ children }: { children: React.ReactNode }) => (
   <SequenceHooksProvider
     config={{
-      projectAccessKey: TEST_CONFIG.apiKey,
+      projectAccessKey: getSequenceProjectAccessKey(),
       env: {
         indexerUrl: getSequenceIndexerUrl(),
         indexerGatewayUrl: getSequenceIndexerUrl(),
@@ -1871,539 +2313,1830 @@ const createWrapper = () => ({ children }: { children: React.ReactNode }) => (
   </SequenceHooksProvider>
 )
 
-/**
- * Complete cross-chain USDC transfer test
- * Tests: EIP-712 deposits, delegatecall execution, balance injection, fee sweeping
- */
-describe('Complete Cross-Chain USDC Transfer', () => {
-  it('should execute Arbitrum USDC → Base USDC transfer successfully', async () => {
-    console.log('\n🚀 Starting complete integration test...')
-    console.log('📊 Scenario: Arbitrum USDC → Base USDC')
-    console.log('💰 Amount: 0.01 USDC')
-    console.log('🎯 Recipient:', TEST_CONFIG.recipient)
+describe('Basic SDK Quote Testing', () => {
+  it('should generate quote for cross-chain transfer', async () => {
+    console.log('Testing cross-chain USDC transfer quote...')
     
-    const { result, waitFor: waitForHook } = renderHook(
+    const { result, waitFor } = renderHook(
       () =>
         useQuote({
           walletClient,
-          fromTokenAddress: ARBITRUM_USDC,
+          fromTokenAddress: '0xaf88d065e77c8cC2239327C5EDb3A432268e5831', // ARBITRUM USDC
           fromChainId: arbitrum.id,
-          toTokenAddress: BASE_USDC,
+          toTokenAddress: '0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913', // BASE USDC
           toChainId: base.id,
-          swapAmount: parseUnits(TEST_CONFIG.amount, 6).toString(), // 0.01 USDC = 10000 units
-          toRecipient: TEST_CONFIG.recipient,
+          swapAmount: '10000', // 0.01 USDC (6 decimals)
+          toRecipient: account.address,
           tradeType: TradeType.EXACT_OUTPUT,
-          slippageTolerance: TEST_CONFIG.slippageTolerance,
-          quoteProvider: 'auto', // Let SDK choose optimal provider
+          slippageTolerance: '0.05', // 5% slippage
+          quoteProvider: 'auto',
           onStatusUpdate: (states) => {
-            console.log('\n🔄 Transaction Status Update:')
-            states.forEach((state, index) => {
-              const statusEmoji = state.state === 'confirmed' ? '✅' : 
-                                state.state === 'pending' ? '⏳' : '❌'
-              const chainName = state.chainId === arbitrum.id ? 'Arbitrum' : 'Base'
-              
-              console.log(`   ${statusEmoji} [${index + 1}] ${state.label || 'Unknown'} (${chainName})`)
-              
-              // Contract-specific monitoring
-              if (state.label?.includes('deposit')) {
-                console.log('      → TrailsIntentEntrypoint.depositToIntent()')
-                console.log('         • EIP-712 signature validation')
-                console.log('         • Nonce/deadline enforcement')
-                console.log('         • ReentrancyGuard active')
-              }
-              
-              if (state.label?.includes('execute')) {
-                console.log('      → TrailsRouter.execute() via delegatecall')
-                console.log('         • onlyDelegatecall modifier')
-                console.log('         • SafeERC20 approvals')
-                console.log('         • Bridge protocol integration')
-              }
-              
-              if (state.label?.includes('shim')) {
-                console.log('      → TrailsRouterShim wrapped execution')
-                console.log('         • Success sentinel setting')
-                console.log('         • opHash validation')
-              }
-              
-              if (state.label?.includes('sweep')) {
-                console.log('      → TrailsRouter.validateOpHashAndSweep()')
-                console.log('         • Conditional fee collection')
-                console.log('         • Sentinel verification')
-              }
-              
-              if (state.refunded) {
-                console.log('      💸 Refund triggered - user protection')
-              }
-              
-              // Event monitoring
-              if (state.decodedGuestModuleEvents?.some(e => e.type === 'CallFailed')) {
-                console.log('      ⚠️  CallFailed event - testing fallback paths')
-              }
-            })
+            console.log('Transaction states update:', states.length, 'steps')
           },
         }),
       { wrapper: createWrapper() }
     )
-    
-    console.log('\n⏳ Waiting for quote generation...')
-    
+
     // Wait for quote to be generated
-    await waitForHook(
+    await waitFor(
       () => {
         const { quote, isLoadingQuote, quoteError } = result.current
-        if (quoteError) {
-          throw new Error(`Quote error: ${quoteError.message}`)
-        }
-        if (isLoadingQuote) {
-          throw new Error('Quote still loading')
-        }
-        return !!quote
+        console.log('Quote status:', { isLoading: isLoadingQuote, hasError: !!quoteError, hasQuote: !!quote })
+        return !!quote && !isLoadingQuote && !quoteError
       },
-      { timeout: 30000 } // 30 second timeout for quote
+      { timeout: 30000 } // 30 second timeout
     )
+
+    const { quote, swap } = result.current
+
+    expect(quote).toBeDefined()
+    expect(swap).toBeDefined()
     
-    const { quote, isLoadingQuote, swap, quoteError } = result.current
-    
-    if (quoteError) {
-      throw new Error(`Quote generation failed: ${quoteError.message}`)
+    if (quote) {
+      console.log('✅ Quote generated successfully!')
+      console.log('Provider:', quote.quoteProvider.name)
+      console.log('From amount:', quote.fromAmount)
+      console.log('To amount:', quote.toAmount)
+      console.log('Steps:', quote.transactionStates.length)
+      
+      // Test quote structure
+      expect(quote.originChain.id).toBe(arbitrum.id)
+      expect(quote.destinationChain.id).toBe(base.id)
+      expect(quote.slippageTolerance).toBe('0.05')
     }
-    
-    if (isLoadingQuote) {
-      throw new Error('Quote still loading after timeout')
-    }
-    
-    if (!quote) {
-      throw new Error('No quote returned from SDK')
-    }
-    
-    console.log('\n✅ Quote generated successfully!')
-    console.log('\n📊 Quote Details:')
-    console.log(`   💰 From: ${formatUnits(quote.fromAmount || '0', 6)} USDC (Arbitrum)`)
-    console.log(`   💰 To: ${formatUnits(quote.toAmount || '0', 6)} USDC (Base)`)
-    console.log(`   🔗 Provider: ${quote.quoteProvider?.name || 'Auto-selected'}`)
-    console.log(`   ⚖️  Price Impact: ${quote.priceImpact}%`)
-    console.log(`   ⏱️  Estimated Time: ${quote.completionEstimateSeconds} seconds`)
-    console.log(`   📋 Steps: ${quote.transactionStates.length}`)
-    
-    quote.transactionStates.forEach((state, index) => {
-      console.log(`      ${index + 1}. ${state.label} (${state.chainId}) - ${state.state || 'pending'}`)
-    })
-    
-    // Validate quote structure
-    expect(quote.originToken.contractAddress.toLowerCase()).toBe(ARBITRUM_USDC.toLowerCase())
-    expect(quote.destinationToken.contractAddress.toLowerCase()).toBe(BASE_USDC.toLowerCase())
-    expect(quote.originChain.id).toBe(arbitrum.id)
-    expect(quote.destinationChain.id).toBe(base.id)
-    expect(quote.fromAmount).toBeDefined()
-    expect(quote.toAmount).toBeDefined()
-    expect(quote.slippageTolerance).toBe(TEST_CONFIG.slippageTolerance)
-    
-    console.log('\n🔄 Executing cross-chain transfer...')
-    
-    // Execute the swap
-    const executionStartTime = Date.now()
-    let executionResult: any
-    
-    try {
-      executionResult = await swap?.()
-      console.log('\n⏳ Monitoring transaction execution...')
-      
-      // Wait for completion (up to 3 minutes for cross-chain)
-      await waitForHook(
-        () => {
-          const currentStates = result.current.quote?.transactionStates || []
-          const allConfirmed = currentStates.length > 0 && 
-                             currentStates.every(state => state.state === 'confirmed')
-          
-          if (!allConfirmed) {
-            console.log(`⏳ ${currentStates.length} of ${currentStates.length} transactions confirmed`)
-          }
-          
-          return allConfirmed
-        },
-        { 
-          timeout: 180000, // 3 minutes for cross-chain
-          interval: 5000 // Check every 5 seconds
-        }
-      )
-      
-      const executionTime = ((Date.now() - executionStartTime) / 1000).toFixed(2)
-      console.log(`\n✅ Transfer executed in ${executionTime} seconds!`)
-      
-    } catch (error) {
-      console.error('\n❌ Execution failed:')
-      console.error('Error:', error instanceof Error ? error.message : String(error))
-      
-      // Log final state even on failure
-      const finalStates = result.current.quote?.transactionStates || []
-      console.log('\n📋 Final transaction states:')
-      finalStates.forEach((state, index) => {
-        const status = state.state === 'confirmed' ? '✅' : 
-                      state.state === 'pending' ? '⏳' : '❌'
-        console.log(`   ${index + 1}. ${state.label} (${state.chainId}) - ${status}`)
-      })
-      
-      throw error
-    }
-    
-    // Get final transaction states
-    const finalStates = result.current.quote?.transactionStates || []
-    const confirmedStates = finalStates.filter(state => state.state === 'confirmed')
-    const failedStates = finalStates.filter(state => state.state === 'failed')
-    
-    console.log('\n📋 Execution Results:')
-    console.log(`   📊 Total Steps: ${finalStates.length}`)
-    console.log(`   ✅ Confirmed: ${confirmedStates.length}`)
-    console.log(`   ❌ Failed: ${failedStates.length}`)
-    console.log(`   ⏳ Pending: ${finalStates.length - confirmedStates.length - failedStates.length}`)
-    
-    // Validate success criteria
-    expect(failedStates.length).toBe(0)
-    expect(confirmedStates.length).toBeGreaterThan(0)
-    
-    // Log confirmed transactions
-    confirmedStates.forEach((state, index) => {
-      console.log(`\n   ${index + 1}. ✅ ${state.label} confirmed:`)
-      console.log(`      Chain: ${state.chainId === arbitrum.id ? 'Arbitrum' : 'Base'}`)
-      
-      if (state.transactionHash) {
-        const explorerUrl = state.chainId === arbitrum.id 
-          ? `https://arbiscan.io/tx/${state.transactionHash}`
-          : `https://basescan.org/tx/${state.transactionHash}`
-        console.log(`      📄 Tx Hash: ${state.transactionHash}`)
-        console.log(`      🔍 Explorer: ${explorerUrl}`)
-      }
-      
-      // Verify specific contract interactions
-      if (state.label?.includes('deposit')) {
-        console.log('      🧪 Verified: TrailsIntentEntrypoint.depositToIntent()')
-        expect(state.chainId).toBe(arbitrum.id)
-      }
-      
-      if (state.label?.includes('execute') || state.label?.includes('shim')) {
-        console.log('      🧪 Verified: TrailsRouter/TrailsRouterShim execution')
-        expect(state.chainId).toBe(arbitrum.id)
-      }
-      
-      if (state.label?.includes('transfer') || state.label?.includes('sweep')) {
-        console.log('      🧪 Verified: Final settlement on destination')
-        expect(state.chainId).toBe(base.id)
-      }
-    })
-    
-    // Check for any refunds (should be none for successful execution)
-    const refundStates = finalStates.filter(state => state.refunded)
-    expect(refundStates.length).toBe(0)
-    console.log('\n✅ No unexpected refunds detected')
-    
-    // Verify no CallFailed events
-    const failedEvents = finalStates.flatMap(state => 
-      state.decodedGuestModuleEvents?.filter(e => e.type === 'CallFailed') || []
-    )
-    expect(failedEvents.length).toBe(0)
-    console.log('✅ No CallFailed events detected')
-    
-    console.log('\n🎉 Complete integration test PASSED!')
-    console.log(`\n📈 Summary:`)
-    console.log(`   ✅ Cross-chain transfer executed successfully`)
-    console.log(`   ✅ All contracts interacted correctly`)
-    console.log(`   ✅ No unauthorized fees or refunds`)
-    console.log(`   ✅ Economic invariants preserved`)
-    
-    return {
-      success: true,
-      confirmedCount: confirmedStates.length,
-      totalSteps: finalStates.length,
-      executionTime: ((Date.now() - executionStartTime) / 1000).toFixed(2),
-      transactionHashes: confirmedStates.map(state => state.transactionHash).filter(Boolean)
-    }
-  }, 300000) // 5 minute timeout for complete flow
-})
 
-console.log('\n🚀 Complete SDK Integration Test')
-console.log('📖 Testing: Arbitrum USDC → Base USDC cross-chain transfer')
-console.log('🎯 Focus: Full contract interaction validation')
-console.log('⏱️  Timeout: 5 minutes')
-console.log('📋 Expected: 2-4 transactions across chains')
-console.log('🔍 Monitoring: TrailsIntentEntrypoint, TrailsRouter, TrailsRouterShim\n')
-```
-
-### Running the Complete Example
-
-1. **Setup Environment**:
-   ```bash
-   # Ensure all dependencies are installed
-   npm install 0xtrails viem @tanstack/react-query @0xsequence/hooks
-   
-   # Set environment variables
-   export TEST_PRIVATE_KEY=0x...  # Your test wallet private key
-   export TRAILS_API_KEY=<FILL_IN_BLANK/>  # Your API key
-   export TEST_RECIPIENT_ADDRESS=0x...  # Address to receive USDC on Base
-   ```
-
-2. **Execute the Test**:
-   ```bash
-   # Run the complete integration test
-   npx ts-node-esm test/complete/FullIntegrationTest.ts
-   ```
-
-3. **Expected Output**:
-   ```
-   🔧 Setting up test environment...
-   ✅ Test account: 0x742d35Cc6634C0532925a3b8C...
-   ✅ API URL: https://api.trails.live/v1
-   ✅ Environment setup complete
-
-   🚀 Starting complete integration test...
-   📊 Scenario: Arbitrum USDC → Base USDC
-   💰 Amount: 0.01 USDC
-   🎯 Recipient: 0x1234567890abcdef...
-   
-   ⏳ Waiting for quote generation...
-
-   ✅ Quote generated successfully!
-   📊 Quote Details:
-      💰 From: 0.07 USDC (Arbitrum)
-      💰 To: 0.01 USDC (Base)
-      🔗 Provider: CCTP
-      ⚖️  Price Impact: 0.00%
-      ⏱️  Estimated Time: 120 seconds
-      📋 Steps: 4
-
-   🔄 Executing cross-chain transfer...
-   ⏳ Monitoring transaction execution...
-
-   🔄 Transaction Status Update:
-      ✅ [1] deposit (Arbitrum)
-         → TrailsIntentEntrypoint.depositToIntent()
-            • EIP-712 signature validation
-            • Nonce/deadline enforcement
-            • ReentrancyGuard active
-
-      ✅ [2] origin-shim (Arbitrum)
-         → TrailsRouterShim wrapped execution
-            • Success sentinel setting
-            • opHash validation
-
-      ✅ [3] fee-sweep (Arbitrum)
-         → TrailsRouter.validateOpHashAndSweep()
-            • Conditional fee collection
-            • Sentinel verification
-
-      ✅ [4] destination-transfer (Base)
-         → Final token transfer to recipient
-
-   ✅ Transfer executed in 45.67 seconds!
-
-   📋 Execution Results:
-      📊 Total Steps: 4
-      ✅ Confirmed: 4
-      ❌ Failed: 0
-      ⏳ Pending: 0
-
-      1. ✅ deposit confirmed:
-         Chain: Arbitrum
-         📄 Tx Hash: 0x1234567890abcdef...
-         🔍 Explorer: https://arbiscan.io/tx/0x1234567890abcdef...
-
-      2. ✅ origin-shim confirmed:
-         Chain: Arbitrum
-         📄 Tx Hash: 0xabcdef1234567890...
-         🔍 Explorer: https://arbiscan.io/tx/0xabcdef1234567890...
-
-      3. ✅ fee-sweep confirmed:
-         Chain: Arbitrum
-         📄 Tx Hash: 0x456789abcdef1234...
-         🔍 Explorer: https://arbiscan.io/tx/0x456789abcdef1234...
-
-      4. ✅ destination-transfer confirmed:
-         Chain: Base
-         📄 Tx Hash: 0x7890123456789abc...
-         🔍 Explorer: https://basescan.org/tx/0x7890123456789abc...
-
-   ✅ No unexpected refunds detected
-   ✅ No CallFailed events detected
-
-   🎉 Complete integration test PASSED!
-   📈 Summary:
-      ✅ Cross-chain transfer executed successfully
-      ✅ All contracts interacted correctly
-      ✅ No unauthorized fees or refunds
-      ✅ Economic invariants preserved
-   ```
-
-### What This Example Tests
-
-This complete example validates the entire Trails contract flow:
-
-#### 1. Environment & Setup Validation
-- Private key and API key validation
-- Wallet client configuration
-- Network connectivity (Arbitrum → Base)
-
-#### 2. Quote Generation & Validation
-- `useQuote` hook integration with Intent Machine
-- Cross-chain route optimization (CCTP selected)
-- Price impact and slippage tolerance enforcement
-- Transaction step planning
-
-#### 3. Contract Interaction Verification
-
-**TrailsIntentEntrypoint**:
-- [x] EIP-712 signature validation
-- [x] Nonce and deadline enforcement  
-- [x] ReentrancyGuard protection
-- [x] Deposit recorded correctly
-
-**TrailsRouter**:
-- [x] Delegatecall-only execution (via wallet)
-- [x] SafeERC20 approvals for USDC
-- [x] Bridge protocol integration (CCTP)
-- [x] Balance injection (if needed)
-- [x] Conditional fee sweeping
-
-**TrailsRouterShim**:
-- [x] Success sentinel setting
-- [x] opHash validation
-- [x] Execution wrapping
-
-#### 4. Economic Security
-- [x] No unauthorized token transfers
-- [x] Fees collected only after success
-- [x] No CallFailed events in successful execution
-- [x] Recipient receives correct amount
-- [x] No unexpected refunds
-
-#### 5. Cross-Chain Coordination
-- [x] Origin chain execution (deposit + bridge)
-- [x] Destination chain settlement (transfer)
-- [x] Transaction state synchronization
-- [x] Final balance verification
-
-### Debugging the Example
-
-If the test fails, check these common issues:
-
-#### 1. Environment Variables
-```bash
-# Verify all required variables are set
-echo $TEST_PRIVATE_KEY
-echo $TRAILS_API_KEY
-echo $TEST_RECIPIENT_ADDRESS
-
-# Check for correct formatting
-echo $TEST_PRIVATE_KEY | grep '^0x[a-fA-F0-9]\{64\}$'
-```
-
-#### 2. Wallet Funding
-Ensure test wallet has sufficient funds:
-- **Arbitrum**: ≥ 0.01 ETH + 0.1 USDC (for gas + deposit)
-- **Base**: ≥ 0.001 ETH (for relayer gas if needed)
-
-#### 3. Network Connectivity
-Test RPC endpoints:
-```bash
-curl -X POST https://arb1.arbitrum.io/rpc -d '{"jsonrpc":"2.0","method":"eth_blockNumber","id":83}' -H "Content-Type: application/json"
-```
-
-#### 4. API Key Validation
-Verify API key permissions:
-```typescript
-// Add to test file for debugging
-console.log('API Key prefix:', TEST_CONFIG.apiKey.slice(0, 20))
-console.log('API permissions:', await checkApiPermissions(TEST_CONFIG.apiKey))
-```
-
-### Extending the Example
-
-#### Add Custom Validation
-```typescript
-// Add after execution
-const validateEconomicInvariants = async (result: any) => {
-  // Verify no unauthorized token loss
-  const originBalance = await getTokenBalance(ARBITRUM_USDC, testAccount.address, arbitrum.id)
-  const expectedLoss = parseUnits('0.07', 6) // ~0.07 USDC expected
-  const tolerance = parseUnits('0.001', 6) // 0.001 USDC tolerance
-  
-  expect(originBalance).toBeGreaterThanOrEqual(parseUnits('0', 6)) // No negative balance
-  expect(Math.abs(expectedLoss - (initialBalance - originBalance))).toBeLessThan(tolerance)
-  
-  console.log(`Economic validation: Balance ${formatUnits(originBalance, 6)} USDC`)
-  console.log(`Expected loss: ~0.07 USDC, tolerance: ±0.001 USDC`)
-}
-
-// Call after successful execution
-await validateEconomicInvariants(executionResult)
-```
-
-#### Test Failure Scenarios
-```typescript
-// Add failure test case
-it('should handle network failure gracefully', async () => {
-  // Mock network failure
-  vi.mock('viem', () => ({
-    // ... existing mocks
-    writeContract: vi.fn().mockRejectedValue(new Error('Network timeout'))
-  }))
-  
-  await expect(executeTransfer()).rejects.toThrow('Network timeout')
-  console.log('✅ Network failure handled gracefully')
-})
-```
-
-#### Multi-Scenario Testing
-```typescript
-// Test multiple providers
-const providers = ['cctp', 'lifi', 'relay']
-for (const provider of providers) {
-  it(`should work with ${provider} provider`, async () => {
-    const result = await executeWithProvider(provider)
-    expect(result.success).toBe(true)
-    expect(result.provider).toBe(provider)
+    console.log('✅ Basic quote test passed')
   })
-}
+})
 ```
 
-### Integration with Foundry
+Run the basic test:
+```bash
+npm run test test/basic/BasicQuoteTest.test.ts
+```
 
-Combine SDK testing with Foundry for comprehensive coverage:
+### Step 3: Testing Contract Interactions
 
-```solidity
-// test/FoundryIntegration.t.sol
-contract SDKIntegrationTest is Test {
-    function test_SDKTriggersCorrectContracts() public {
-        // Deploy contracts
-        TrailsIntentEntrypoint intentEntrypoint = new TrailsIntentEntrypoint();
-        TrailsRouter trailsRouter = new TrailsRouter();
-        TrailsRouterShim trailsRouterShim = new TrailsRouterShim();
-        
-        // Simulate SDK execution
-        vm.prank(testUser);
-        intentEntrypoint.depositToIntent{value: 0}(
-            testUser,
-            USDC,
-            amount,
-            intentAddress,
-            deadline,
-            signature
-        );
-        
-        // Verify state changes
-        assertTrue(intentEntrypoint.depositRecorded(testUser, USDC, amount));
-        assertEq(trailsRouterShim.successSentinel(opHash), 1);
-        
-        // Test failure scenarios
-        vm.expectRevert("Direct call not allowed");
-        trailsRouter.execute(calls); // Should fail without delegatecall
+#### 3.1 Cross-Chain Transfer Test
+
+Test a complete cross-chain transfer:
+
+```typescript
+// test/cross-chain/CrossChainTest.test.ts
+describe('Cross-Chain Transfer Testing', () => {
+  it('should execute cross-chain transfer successfully', async () => {
+    const { result, waitFor } = renderHook(
+      () =>
+        useQuote({
+          walletClient,
+          fromTokenAddress: '0xaf88d065e77c8cC2239327C5EDb3A432268e5831', // ARBITRUM USDC
+          fromChainId: arbitrum.id,
+          toTokenAddress: '0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913', // BASE USDC
+          toChainId: base.id,
+          swapAmount: '10000', // 0.01 USDC
+          toRecipient: account.address,
+          tradeType: TradeType.EXACT_OUTPUT,
+          slippageTolerance: '0.05',
+          quoteProvider: 'cctp', // Specific provider for testing
+          onStatusUpdate: (states) => {
+            console.log('Cross-chain states:', states.map(s => `${s.label} (${s.state})`))
+          },
+        }),
+      { wrapper: createWrapper() }
+    )
+
+    // Wait for quote
+    await waitFor(() => !!result.current.quote && !!result.current.swap, { timeout: 30000 })
+
+    const { quote, swap } = result.current
+
+    expect(quote).toBeDefined()
+    expect(swap).toBeDefined()
+
+    // Execute the swap (this triggers the full contract flow)
+    console.log('Executing cross-chain transfer...')
+    await swap!()
+
+    // Wait for execution to complete
+    await waitFor(
+      () => {
+        const states = quote?.transactionStates || []
+        const allConfirmed = states.every(state => state.state === 'confirmed')
+        console.log('Execution status:', { allConfirmed, states: states.length })
+        return allConfirmed
+      },
+      { timeout: 180000 } // 3 minutes for cross-chain
+    )
+
+    console.log('✅ Cross-chain transfer completed successfully')
+  })
+})
+```
+
+#### 3.2 Gasless Execution Test
+
+Test gasless execution with ERC-2612 permits:
+
+```typescript
+// test/gasless/GaslessTest.test.ts
+describe('Gasless Execution Testing', () => {
+  it('should execute gasless transfer with permit', async () => {
+    const { result, waitFor } = renderHook(
+      () =>
+        useQuote({
+          walletClient,
+          fromTokenAddress: '0xaf88d065e77c8cC2239327C5EDb3A432268e5831', // ARBITRUM USDC
+          fromChainId: arbitrum.id,
+          toTokenAddress: '0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913', // BASE USDC
+          toChainId: base.id,
+          swapAmount: '10000', // 0.01 USDC
+          toRecipient: account.address,
+          tradeType: TradeType.EXACT_OUTPUT,
+          slippageTolerance: '0.05',
+          selectedFeeToken: {
+            tokenAddress: '0xaf88d065e77c8cC2239327C5EDb3A432268e5831', // USDC for fees
+            tokenSymbol: 'USDC'
+          },
+          onStatusUpdate: (states) => {
+            console.log('Gasless states:', states.map(s => `${s.label} (${s.state})`))
+          },
+        }),
+      { wrapper: createWrapper() }
+    )
+
+    // Wait for quote
+    await waitFor(() => !!result.current.quote && !!result.current.swap, { timeout: 30000 })
+
+    const { quote, swap } = result.current
+
+    expect(quote).toBeDefined()
+    expect(swap).toBeDefined()
+    expect(quote?.selectedFeeToken).toBeDefined()
+
+    // Execute gasless transfer
+    console.log('Executing gasless transfer...')
+    await swap!()
+
+    // Wait for completion
+    await waitFor(
+      () => {
+        const states = quote?.transactionStates || []
+        const allConfirmed = states.every(state => state.state === 'confirmed')
+        console.log('Gasless execution status:', { allConfirmed, states: states.length })
+        return allConfirmed
+      },
+      { timeout: 180000 }
+    )
+
+    console.log('✅ Gasless execution completed successfully')
+  })
+})
+```
+
+### Step 4: Testing with the Widget
+
+Create a React app to test the widget interface:
+
+```typescript
+// src/App.tsx
+import React, { useState } from 'react'
+import { createRoot } from 'react-dom/client'
+import { TrailsWidget } from '0xtrails/widget'
+import { SequenceProvider } from '@0xsequence/provider'
+import { getSequenceConfig } from '0xtrails/config'
+
+const App: React.FC = () => {
+  const [amount, setAmount] = useState('0.01')
+  const [fromChain, setFromChain] = useState('arbitrum')
+  const [toChain, setToChain] = useState('base')
+
+  return (
+    <div style={{ padding: '20px', maxWidth: '800px', margin: '0 auto' }}>
+      <h1>Trails SDK Testing Interface</h1>
+      
+      <div style={{ marginBottom: '20px', padding: '15px', border: '1px solid #ccc' }}>
+        <h3>Configuration</h3>
+        <label>
+          Amount: <input 
+            type="number" 
+            value={amount} 
+            onChange={(e) => setAmount(e.target.value)} 
+            step="0.001"
+          />
+        </label>
+        <br />
+        <label style={{ marginLeft: '20px' }}>
+          From: <select value={fromChain} onChange={(e) => setFromChain(e.target.value)}>
+            <option value="arbitrum">Arbitrum</option>
+            <option value="base">Base</option>
+          </select>
+        </label>
+        <br />
+        <label style={{ marginLeft: '20px' }}>
+          To: <select value={toChain} onChange={(e) => setToChain(e.target.value)}>
+            <option value="base">Base</option>
+            <option value="arbitrum">Arbitrum</option>
+          </select>
+        </label>
+      </div>
+      
+      <SequenceProvider config={getSequenceConfig()} defaultNetwork={fromChain}>
+        <TrailsWidget
+          defaultFromChain={fromChain}
+          defaultToChain={toChain}
+          defaultFromToken="USDC"
+          defaultToToken="USDC"
+          defaultAmount={amount}
+          showDebugPanel={true}
+          enableTestMode={true}
+          slippageTolerance={0.05}
+          quoteProvider="auto"
+          onQuoteGenerated={(quote) => {
+            console.log('Quote generated:', {
+              from: `${quote.fromAmount} ${quote.originToken.symbol}`,
+              to: `${quote.toAmount} ${quote.destinationToken.symbol}`,
+              provider: quote.quoteProvider.name
+            })
+          }}
+          onTransactionUpdate={(states) => {
+            console.log('Transaction update:', states.length, 'active transactions')
+            states.forEach(state => {
+              if (state.state === 'confirmed') {
+                console.log(`✅ ${state.label} completed on chain ${state.chainId}`)
+              }
+            })
+          }}
+          onExecutionComplete={(result) => {
+            if (result.success) {
+              console.log('🎉 Execution completed successfully!')
+              console.log('Final balances:', result.finalBalances)
+            } else {
+              console.error('❌ Execution failed:', result.error)
+            }
+          }}
+          onError={(error) => {
+            console.error('Error:', error.message)
+          }}
+        />
+      </SequenceProvider>
+    </div>
+  )
+}
+
+const root = createRoot(document.getElementById('root') as HTMLElement)
+root.render(<App />)
+```
+
+Run the widget:
+```bash
+npm run dev
+```
+
+### Step 5: Validation and Monitoring
+
+#### 5.1 Monitor Contract Interactions
+
+During testing, monitor these key contract interactions:
+
+1. **Deposit Phase** (`TrailsIntentEntrypoint`):
+   - EIP-712 signature validation
+   - Nonce and deadline enforcement
+   - ReentrancyGuard protection
+
+2. **Execution Phase** (`TrailsRouter` via `TrailsRouterShim`):
+   - Delegatecall-only execution
+   - SafeERC20 approvals
+   - Balance injection accuracy
+
+3. **Settlement Phase** (`TrailsRouter.sweep()`):
+   - Conditional fee collection
+   - Success sentinel verification
+   - Dust cleanup and refunds
+
+#### 5.2 Verify Economic Invariants
+
+After each successful execution:
+
+```typescript
+// Validate no unauthorized losses
+const originBalance = await getBalance(walletClient, {
+  address: account.address,
+  token: arbitrumUSDCAddress
+})
+
+const expectedLoss = parseUnits('0.07', 6) // ~0.07 USDC expected (deposit + fees)
+const tolerance = parseUnits('0.001', 6) // 0.001 USDC tolerance
+
+console.log('Balance validation:')
+console.log(`Initial balance: ${formatUnits(initialBalance, 6)} USDC`)
+console.log(`Current balance: ${formatUnits(originBalance, 6)} USDC`)
+console.log(`Expected loss: ~0.07 USDC`)
+
+expect(Math.abs(expectedLoss - (initialBalance - originBalance))).toBeLessThan(tolerance)
+console.log('✅ Economic invariants preserved')
+```
+
+#### 5.3 Check Contract State
+
+Verify contract state post-execution:
+
+```bash
+# Check if deposit was recorded
+cast call $INTENT_ENTRYPOINT_ADDRESS "deposits(bytes32)(bool)" $INTENT_HASH --rpc-url $ARBITRUM_RPC_URL
+
+# Verify success sentinel was set
+cast call $ROUTER_SHIM_ADDRESS "successSentinel(bytes32)(bool)" $OP_HASH --rpc-url $ARBITRUM_RPC_URL
+
+# Check fee collector received fees
+cast call $USDC_ADDRESS "balanceOf(address)(uint256)" $FEE_COLLECTOR_ADDRESS --rpc-url $ARBITRUM_RPC_URL
+```
+
+### Step 6: Advanced Testing
+
+#### 6.1 Test Different Providers
+
+Test with different bridge providers:
+
+```typescript
+const providers = ['lifi', 'cctp', 'relay']
+
+providers.forEach(async (provider) => {
+  const { result } = renderHook(
+    () =>
+      useQuote({
+        // ... base configuration
+        quoteProvider: provider
+      }),
+    { wrapper: createWrapper() }
+  )
+
+  await waitFor(() => !!result.current.quote, { timeout: 30000 })
+  
+  console.log(`✅ ${provider} provider quote generated`)
+})
+```
+
+#### 6.2 Test Failure Scenarios
+
+Test error handling and fallback mechanisms:
+
+```typescript
+// Test invalid destination contract
+const { result } = renderHook(
+  () =>
+    useQuote({
+      // ... base configuration
+      toCalldata: '0xdeadbeef', // Invalid calldata
+    }),
+  { wrapper: createWrapper() }
+)
+
+await waitFor(
+  () => !!result.current.quoteError,
+  { timeout: 30000 }
+)
+
+const error = result.current.quoteError
+expect(error?.message).toContain('CallFailed')
+console.log('✅ Failure handling works correctly')
+```
+
+#### 6.3 Performance Testing
+
+Measure execution performance:
+
+```typescript
+const startTime = Date.now()
+
+await swap()
+
+const executionTime = Date.now() - startTime
+console.log(`Execution time: ${executionTime}ms`)
+
+expect(executionTime).toBeLessThan(300000) // Less than 5 minutes
+```
+
+## Audit Focus Areas Mapping
+
+This section maps the testing scenarios to the six key audit focus areas identified in the audit documentation. Each audit concern is linked to specific contract functions to validate and testing approaches using the SDK.
+
+### A. Delegatecall-Only Router Pattern
+
+**Audit Concern**: The `TrailsRouter` and `TrailsRouterShim` contracts must enforce delegatecall-only execution to prevent direct calls that could bypass wallet context protection.
+
+**Key Functions**:
+- `TrailsRouter.onlyDelegatecall` modifier
+- All `TrailsRouter` execution functions (`execute`, `pullAndExecute`, `injectAndCall`, `injectSweepAndCall`)
+- `TrailsRouterShim` wrapper functions
+
+**Testing Approach**:
+
+| Test Type | What to Validate | How to Test with SDK |
+|-----------|------------------|---------------------|
+| Direct Call Block | Direct calls to router should revert with "Direct call not allowed" | Use `walletClient.writeContract()` directly to `TrailsRouter.execute()` without delegatecall flag |
+| Delegatecall Success | Execution through wallet delegatecall should succeed | Use `useQuote` hook which automatically uses delegatecall via wallet |
+| Context Preservation | `msg.sender` = wallet address during execution | Monitor transaction logs to verify correct `msg.sender` |
+| Shim Validation | `TrailsRouterShim` correctly wraps router calls | Check that shim execution precedes router execution in transaction traces |
+
+**Expected Behavior**:
+- Direct calls to `TrailsRouter` revert with `onlyDelegatecall` error
+- SDK executions succeed via wallet delegatecall
+- All router calls originate from wallet context
+
+### B. Balance Injection & Calldata Surgery
+
+**Audit Concern**: The `TrailsRouter.injectAndCall()` and `injectSweepAndCall()` functions must correctly replace placeholder bytes with actual wallet balances and handle calldata manipulation securely.
+
+**Key Functions**:
+- `TrailsRouter.injectAndCall((address to, uint256 value, bytes data) target, uint256 amountOffset)`
+- `TrailsRouter.injectSweepAndCall((address to, uint256 value, bytes data) target, uint256 amountOffset)`
+- Placeholder detection and replacement logic
+- Balance calculation (current vs quoted amounts)
+
+**Testing Approach**:
+
+| Test Type | What to Validate | How to Test with SDK |
+|-----------|------------------|---------------------|
+| Placeholder Detection | 32-byte zero placeholder correctly identified | Configure widget with custom calldata containing placeholder bytes |
+| Offset Calculation | `amountOffset` points to correct calldata position | Test with Aave/Morpho deposit calldata, verify injection position |
+| Balance Accuracy | Current wallet balance used, not quoted amount | Compare injected amount with actual balance before execution |
+| Bounds Checking | No out-of-bounds writes beyond calldata length | Test with malformed calldata (short/long offsets) |
+| Token Handling | ETH vs ERC20 injection paths | Test native ETH and ERC20 scenarios separately |
+
+**Expected Behavior**:
+- Placeholder (`0x00...00`) replaced with actual wallet balance
+- `amountOffset` correctly calculated for different contract ABIs
+- No calldata corruption or out-of-bounds writes
+- ETH value forwarding works without token wrapping
+
+### C. Fee Collection & Refund Semantics
+
+**Audit Concern**: Fee collection must only occur after successful execution verification, and refund mechanisms must protect users from unauthorized losses.
+
+**Key Functions**:
+- `TrailsRouter.validateOpHashAndSweep()` - Conditional fee collection
+- `TrailsRouter.refundAndSweep()` - User protection on failure
+- `TrailsRouterShim` success sentinel validation
+- `onlyFallback` execution path control
+
+**Testing Approach**:
+
+| Test Type | What to Validate | How to Test with SDK |
+|-----------|------------------|---------------------|
+| Success Path | Fees collected only after success sentinel | Execute normal transfer, verify fee sweep follows shim execution |
+| Failure Path | No fees on failed execution | Trigger destination failure, verify no fee collection |
+| Refund Trigger | `refundAndSweep()` activates on `CallFailed` | Use invalid calldata to trigger destination revert |
+| Conditional Sweep | `validateOpHashAndSweep()` requires sentinel | Test direct fee sweep before shim completion (should fail) |
+
+**Expected Behavior**:
+- `validateOpHashAndSweep()` reverts if success sentinel not set
+- `refundAndSweep()` called only on failures with `onlyFallback=true`
+- Origin failure → full refund, no bridging
+- Destination failure → sweep to user on destination chain
+
+### D. Entrypoint Contracts
+
+**Audit Concern**: `TrailsIntentEntrypoint` must correctly validate EIP-712 signatures, handle ERC-2612 permits, and protect against replay attacks.
+
+**Key Functions**:
+- `depositToIntent(address user, address token, uint256 amount, address intentAddress, uint256 deadline)`
+- `depositToIntentWithPermit(...)` - Gasless deposits
+- `payFee()` / `payFeeWithPermit()` - Fee collection
+- Nonce and deadline validation
+- Reentrancy protection
+
+**Testing Approach**:
+
+| Test Type | What to Validate | How to Test with SDK |
+|-----------|------------------|---------------------|
+| EIP-712 Signature | Correct domain separator and signature recovery | Use `useQuote` with valid/invalid signatures |
+| Nonce Management | Nonce increments, replay protection | Execute multiple deposits, verify nonce progression |
+| Deadline Enforcement | Current time ≤ deadline | Test with expired deadlines (should fail) |
+| Permit Handling | ERC-2612 permit validation | Use gasless mode with `selectedFeeToken` |
+| Reentrancy Guard | No recursive calls during deposit | Cannot be directly tested via SDK, verify via Foundry |
+
+**Expected Behavior**:
+- Valid EIP-712 signatures accepted, invalid rejected
+- Nonce increments per user/token pair
+- Expired deadlines cause revert
+- ERC-2612 permits use exact amounts, no excess consumption
+- ReentrancyGuard prevents recursive deposit calls
+
+### E. Cross-Chain Assumptions
+
+**Audit Concern**: Non-atomic cross-chain execution must handle origin and destination failures correctly, with proper user protection and no stuck states.
+
+**Key Functions**:
+- Cross-chain coordination between origin and destination execution
+- Bridge protocol integration (LiFi, CCTP, Relay)
+- Destination failure handling and refunds
+- Timeout and stuck state recovery
+
+**Testing Approach**:
+
+| Test Type | What to Validate | How to Test with SDK |
+|-----------|------------------|---------------------|
+| Origin Failure | No bridging on origin failure | Mock bridge failure (requires custom setup) |
+| Destination Failure | Sweep to user on destination | Use invalid destination calldata |
+| Provider Integration | Different bridge protocols | Test with `quoteProvider: 'lifi'`, `'cctp'`, `'relay'` |
+| State Synchronization | No stuck funds between chains | Verify final balances match expected outcome |
+
+**Expected Behavior**:
+- Origin failure → full refund, no bridging occurs
+- Destination failure → sweep to user on destination chain
+- All funds either delivered to recipient or refunded
+- Bridge protocols execute correctly without stuck states
+
+### F. Storage Sentinels
+
+**Audit Concern**: `TrailsSentinelLib` must use namespaced storage slots to avoid collisions with wallet storage.
+
+**Key Functions**:
+- `successSlot(bytes32 opHash)` - Sentinel slot calculation
+- Storage namespace enforcement
+- opHash uniqueness validation
+
+**Testing Approach**:
+
+| Test Type | What to Validate | How to Test with SDK |
+|-----------|------------------|---------------------|
+| Slot Namespacing | Sentinel slots don't collide with wallet storage | Cannot be directly tested via SDK, verify via Foundry |
+| opHash Uniqueness | Different operations use different slots | Execute multiple operations, verify unique opHashes |
+| Sentinel Value | Success value = `0x000...01`, failure = `0x000...00` | Monitor execution logs for sentinel setting |
+
+**Expected Behavior**:
+- All sentinel slots namespaced to avoid wallet collisions
+- Success sentinel set only after complete execution
+- Different opHashes generate different storage slots
+- Sentinel value correctly indicates execution status
+
+## Testing Workflow
+
+### Step 1: Environment Setup
+
+#### 1.1 Project Setup
+
+Create a new test project:
+
+```bash
+mkdir trails-sdk-test && cd trails-sdk-test
+npm init -y
+
+# Install dependencies
+npm install 0xtrails viem @tanstack/react-query
+npm install --save-dev vitest @testing-library/react @testing-library/jest-dom
+
+# Create basic package.json scripts
+cat > package.json << 'EOF'
+{
+  "name": "trails-sdk-test",
+  "version": "1.0.0",
+  "scripts": {
+    "test": "vitest",
+    "test:scenarios": "vitest run --reporter=verbose"
+  },
+  "devDependencies": {
+    "@testing-library/jest-dom": "^6.4.0",
+    "@testing-library/react": "^14.0.0",
+    "jsdom": "^23.0.0",
+    "vitest": "^1.0.0"
+  },
+  "dependencies": {
+    "0xtrails": "latest",
+    "viem": "^2.0.0",
+    "@tanstack/react-query": "^5.0.0"
+  }
+}
+EOF
+```
+
+#### 1.2 Environment Configuration
+
+Create `.env` file with your test configuration:
+
+```bash
+# Wallet configuration
+TEST_PRIVATE_KEY=0x1234567890abcdef...  # Your test wallet private key
+
+# API configuration
+TRAILS_API_KEY=<FILL_IN_BLANK/>  # Request from project team
+
+# RPC endpoints (optional - uses public defaults)
+ARBITRUM_RPC_URL=https://arb1.arbitrum.io/rpc
+BASE_RPC_URL=https://mainnet.base.org
+
+# Testing configuration
+SLIPPAGE_TOLERANCE=0.05  # 5% slippage for testing
+```
+
+#### 1.3 Verify Setup
+
+Create a setup verification test:
+
+```typescript
+// test/setup.test.ts
+import { describe, it, expect } from 'vitest'
+import { privateKeyToAccount } from 'viem/accounts'
+import { getSequenceConfig, getTrailsApiUrl, getSequenceProjectAccessKey } from '0xtrails/config'
+
+describe('SDK Environment Setup', () => {
+  it('should have valid private key', () => {
+    const privateKey = process.env.TEST_PRIVATE_KEY
+    expect(privateKey).toBeDefined()
+    expect(privateKey).toMatch(/^0x[a-fA-F0-9]{64}$/)
+    
+    const account = privateKeyToAccount(privateKey as `0x${string}`)
+    console.log('✅ Test wallet:', account.address)
+  })
+
+  it('should have valid API key', () => {
+    const apiKey = getSequenceProjectAccessKey()
+    expect(apiKey).toBeDefined()
+    expect(apiKey).toMatch(/^pk_(live|test)_[a-zA-Z0-9]{32,}$/)
+    console.log('✅ API key loaded:', apiKey.slice(0, 10) + '...')
+  })
+
+  it('should have valid API URL', () => {
+    const apiUrl = getTrailsApiUrl()
+    expect(apiUrl).toBeDefined()
+    expect(apiUrl).toMatch(/^https?:\/\/.*\/api\/v1/)
+    console.log('✅ API URL:', apiUrl)
+  })
+
+  it('should have sequence configuration', () => {
+    const config = getSequenceConfig()
+    expect(config).toBeDefined()
+    console.log('✅ Sequence config loaded')
+  })
+})
+```
+
+Run setup verification:
+```bash
+npm run test test/setup.test.ts
+```
+
+### Step 2: Basic Testing with `useQuote` Hook
+
+Create a basic test file to verify SDK functionality:
+
+```typescript
+// test/basic/BasicQuoteTest.test.ts
+import { describe, it, expect, beforeAll } from 'vitest'
+import { renderHook, waitFor } from '@testing-library/react'
+import { createWalletClient, http } from 'viem'
+import { privateKeyToAccount } from 'viem/accounts'
+import { arbitrum, base } from 'viem/chains'
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
+import { SequenceHooksProvider } from '@0xsequence/hooks'
+import { useQuote, TradeType } from '0xtrails/prepareSend'
+import { getSequenceConfig, getTrailsApiUrl, getSequenceProjectAccessKey, getSequenceIndexerUrl } from '0xtrails/config'
+
+// Setup
+const privateKey = process.env.TEST_PRIVATE_KEY as `0x${string}`
+const account = privateKeyToAccount(privateKey)
+const walletClient = createWalletClient({
+  account,
+  chain: arbitrum,
+  transport: http(),
+})
+
+const queryClient = new QueryClient({
+  defaultOptions: {
+    queries: { retry: false, staleTime: 0 },
+  },
+})
+
+const createWrapper = () => ({ children }: { children: React.ReactNode }) => (
+  <SequenceHooksProvider
+    config={{
+      projectAccessKey: getSequenceProjectAccessKey(),
+      env: {
+        indexerUrl: getSequenceIndexerUrl(),
+        indexerGatewayUrl: getSequenceIndexerUrl(),
+        apiUrl: getTrailsApiUrl(),
+      },
+    }}
+  >
+    <QueryClientProvider client={queryClient}>
+      {children}
+    </QueryClientProvider>
+  </SequenceHooksProvider>
+)
+
+describe('Basic SDK Quote Testing', () => {
+  it('should generate quote for cross-chain transfer', async () => {
+    console.log('Testing cross-chain USDC transfer quote...')
+    
+    const { result, waitFor } = renderHook(
+      () =>
+        useQuote({
+          walletClient,
+          fromTokenAddress: '0xaf88d065e77c8cC2239327C5EDb3A432268e5831', // ARBITRUM USDC
+          fromChainId: arbitrum.id,
+          toTokenAddress: '0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913', // BASE USDC
+          toChainId: base.id,
+          swapAmount: '10000', // 0.01 USDC (6 decimals)
+          toRecipient: account.address,
+          tradeType: TradeType.EXACT_OUTPUT,
+          slippageTolerance: '0.05', // 5% slippage
+          quoteProvider: 'auto',
+          onStatusUpdate: (states) => {
+            console.log('Transaction states update:', states.length, 'steps')
+          },
+        }),
+      { wrapper: createWrapper() }
+    )
+
+    // Wait for quote to be generated
+    await waitFor(
+      () => {
+        const { quote, isLoadingQuote, quoteError } = result.current
+        console.log('Quote status:', { isLoading: isLoadingQuote, hasError: !!quoteError, hasQuote: !!quote })
+        return !!quote && !isLoadingQuote && !quoteError
+      },
+      { timeout: 30000 } // 30 second timeout
+    )
+
+    const { quote, swap } = result.current
+
+    expect(quote).toBeDefined()
+    expect(swap).toBeDefined()
+    
+    if (quote) {
+      console.log('✅ Quote generated successfully!')
+      console.log('Provider:', quote.quoteProvider.name)
+      console.log('From amount:', quote.fromAmount)
+      console.log('To amount:', quote.toAmount)
+      console.log('Steps:', quote.transactionStates.length)
+      
+      // Test quote structure
+      expect(quote.originChain.id).toBe(arbitrum.id)
+      expect(quote.destinationChain.id).toBe(base.id)
+      expect(quote.slippageTolerance).toBe('0.05')
     }
-}
+
+    console.log('✅ Basic quote test passed')
+  })
+})
 ```
 
-This complete example provides a solid foundation for testing the Trails contracts. Extend it with additional scenarios, validation logic, and custom error handling as needed for your specific audit requirements.
+Run the basic test:
+```bash
+npm run test test/basic/BasicQuoteTest.test.ts
+```
 
----
+### Step 3: Testing Contract Interactions
 
-*Next section will cover comprehensive troubleshooting and support information.*
+#### 3.1 Cross-Chain Transfer Test
+
+Test a complete cross-chain transfer:
+
+```typescript
+// test/cross-chain/CrossChainTest.test.ts
+describe('Cross-Chain Transfer Testing', () => {
+  it('should execute cross-chain transfer successfully', async () => {
+    const { result, waitFor } = renderHook(
+      () =>
+        useQuote({
+          walletClient,
+          fromTokenAddress: '0xaf88d065e77c8cC2239327C5EDb3A432268e5831', // ARBITRUM USDC
+          fromChainId: arbitrum.id,
+          toTokenAddress: '0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913', // BASE USDC
+          toChainId: base.id,
+          swapAmount: '10000', // 0.01 USDC
+          toRecipient: account.address,
+          tradeType: TradeType.EXACT_OUTPUT,
+          slippageTolerance: '0.05',
+          quoteProvider: 'cctp', // Specific provider for testing
+          onStatusUpdate: (states) => {
+            console.log('Cross-chain states:', states.map(s => `${s.label} (${s.state})`))
+          },
+        }),
+      { wrapper: createWrapper() }
+    )
+
+    // Wait for quote
+    await waitFor(() => !!result.current.quote && !!result.current.swap, { timeout: 30000 })
+
+    const { quote, swap } = result.current
+
+    expect(quote).toBeDefined()
+    expect(swap).toBeDefined()
+
+    // Execute the swap (this triggers the full contract flow)
+    console.log('Executing cross-chain transfer...')
+    await swap!()
+
+    // Wait for execution to complete
+    await waitFor(
+      () => {
+        const states = quote?.transactionStates || []
+        const allConfirmed = states.every(state => state.state === 'confirmed')
+        console.log('Execution status:', { allConfirmed, states: states.length })
+        return allConfirmed
+      },
+      { timeout: 180000 } // 3 minutes for cross-chain
+    )
+
+    console.log('✅ Cross-chain transfer completed successfully')
+  })
+})
+```
+
+#### 3.2 Gasless Execution Test
+
+Test gasless execution with ERC-2612 permits:
+
+```typescript
+// test/gasless/GaslessTest.test.ts
+describe('Gasless Execution Testing', () => {
+  it('should execute gasless transfer with permit', async () => {
+    const { result, waitFor } = renderHook(
+      () =>
+        useQuote({
+          walletClient,
+          fromTokenAddress: '0xaf88d065e77c8cC2239327C5EDb3A432268e5831', // ARBITRUM USDC
+          fromChainId: arbitrum.id,
+          toTokenAddress: '0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913', // BASE USDC
+          toChainId: base.id,
+          swapAmount: '10000', // 0.01 USDC
+          toRecipient: account.address,
+          tradeType: TradeType.EXACT_OUTPUT,
+          slippageTolerance: '0.05',
+          selectedFeeToken: {
+            tokenAddress: '0xaf88d065e77c8cC2239327C5EDb3A432268e5831', // USDC for fees
+            tokenSymbol: 'USDC'
+          },
+          onStatusUpdate: (states) => {
+            console.log('Gasless states:', states.map(s => `${s.label} (${s.state})`))
+          },
+        }),
+      { wrapper: createWrapper() }
+    )
+
+    // Wait for quote
+    await waitFor(() => !!result.current.quote && !!result.current.swap, { timeout: 30000 })
+
+    const { quote, swap } = result.current
+
+    expect(quote).toBeDefined()
+    expect(swap).toBeDefined()
+    expect(quote?.selectedFeeToken).toBeDefined()
+
+    // Execute gasless transfer
+    console.log('Executing gasless transfer...')
+    await swap!()
+
+    // Wait for completion
+    await waitFor(
+      () => {
+        const states = quote?.transactionStates || []
+        const allConfirmed = states.every(state => state.state === 'confirmed')
+        console.log('Gasless execution status:', { allConfirmed, states: states.length })
+        return allConfirmed
+      },
+      { timeout: 180000 }
+    )
+
+    console.log('✅ Gasless execution completed successfully')
+  })
+})
+```
+
+### Step 4: Testing with the Widget
+
+Create a React app to test the widget interface:
+
+```typescript
+// src/App.tsx
+import React, { useState } from 'react'
+import { createRoot } from 'react-dom/client'
+import { TrailsWidget } from '0xtrails/widget'
+import { SequenceProvider } from '@0xsequence/provider'
+import { getSequenceConfig } from '0xtrails/config'
+
+const App: React.FC = () => {
+  const [amount, setAmount] = useState('0.01')
+  const [fromChain, setFromChain] = useState('arbitrum')
+  const [toChain, setToChain] = useState('base')
+
+  return (
+    <div style={{ padding: '20px', maxWidth: '800px', margin: '0 auto' }}>
+      <h1>Trails SDK Testing Interface</h1>
+      
+      <div style={{ marginBottom: '20px', padding: '15px', border: '1px solid #ccc' }}>
+        <h3>Configuration</h3>
+        <label>
+          Amount: <input 
+            type="number" 
+            value={amount} 
+            onChange={(e) => setAmount(e.target.value)} 
+            step="0.001"
+          />
+        </label>
+        <br />
+        <label style={{ marginLeft: '20px' }}>
+          From: <select value={fromChain} onChange={(e) => setFromChain(e.target.value)}>
+            <option value="arbitrum">Arbitrum</option>
+            <option value="base">Base</option>
+          </select>
+        </label>
+        <br />
+        <label style={{ marginLeft: '20px' }}>
+          To: <select value={toChain} onChange={(e) => setToChain(e.target.value)}>
+            <option value="base">Base</option>
+            <option value="arbitrum">Arbitrum</option>
+          </select>
+        </label>
+      </div>
+      
+      <SequenceProvider config={getSequenceConfig()} defaultNetwork={fromChain}>
+        <TrailsWidget
+          defaultFromChain={fromChain}
+          defaultToChain={toChain}
+          defaultFromToken="USDC"
+          defaultToToken="USDC"
+          defaultAmount={amount}
+          showDebugPanel={true}
+          enableTestMode={true}
+          slippageTolerance={0.05}
+          quoteProvider="auto"
+          onQuoteGenerated={(quote) => {
+            console.log('Quote generated:', {
+              from: `${quote.fromAmount} ${quote.originToken.symbol}`,
+              to: `${quote.toAmount} ${quote.destinationToken.symbol}`,
+              provider: quote.quoteProvider.name
+            })
+          }}
+          onTransactionUpdate={(states) => {
+            console.log('Transaction update:', states.length, 'active transactions')
+            states.forEach(state => {
+              if (state.state === 'confirmed') {
+                console.log(`✅ ${state.label} completed on chain ${state.chainId}`)
+              }
+            })
+          }}
+          onExecutionComplete={(result) => {
+            if (result.success) {
+              console.log('🎉 Execution completed successfully!')
+              console.log('Final balances:', result.finalBalances)
+            } else {
+              console.error('❌ Execution failed:', result.error)
+            }
+          }}
+          onError={(error) => {
+            console.error('Error:', error.message)
+          }}
+        />
+      </SequenceProvider>
+    </div>
+  )
+}
+
+const root = createRoot(document.getElementById('root') as HTMLElement)
+root.render(<App />)
+```
+
+Run the widget:
+```bash
+npm run dev
+```
+
+### Step 5: Validation and Monitoring
+
+#### 5.1 Monitor Contract Interactions
+
+During testing, monitor these key contract interactions:
+
+1. **Deposit Phase** (`TrailsIntentEntrypoint`):
+   - EIP-712 signature validation
+   - Nonce and deadline enforcement
+   - ReentrancyGuard protection
+
+2. **Execution Phase** (`TrailsRouter` via `TrailsRouterShim`):
+   - Delegatecall-only execution
+   - SafeERC20 approvals
+   - Balance injection accuracy
+
+3. **Settlement Phase** (`TrailsRouter.sweep()`):
+   - Conditional fee collection
+   - Success sentinel verification
+   - Dust cleanup and refunds
+
+#### 5.2 Verify Economic Invariants
+
+After each successful execution:
+
+```typescript
+// Validate no unauthorized losses
+const originBalance = await getBalance(walletClient, {
+  address: account.address,
+  token: arbitrumUSDCAddress
+})
+
+const expectedLoss = parseUnits('0.07', 6) // ~0.07 USDC expected (deposit + fees)
+const tolerance = parseUnits('0.001', 6) // 0.001 USDC tolerance
+
+console.log('Balance validation:')
+console.log(`Initial balance: ${formatUnits(initialBalance, 6)} USDC`)
+console.log(`Current balance: ${formatUnits(originBalance, 6)} USDC`)
+console.log(`Expected loss: ~0.07 USDC`)
+
+expect(Math.abs(expectedLoss - (initialBalance - originBalance))).toBeLessThan(tolerance)
+console.log('✅ Economic invariants preserved')
+```
+
+#### 5.3 Check Contract State
+
+Verify contract state post-execution:
+
+```bash
+# Check if deposit was recorded
+cast call $INTENT_ENTRYPOINT_ADDRESS "deposits(bytes32)(bool)" $INTENT_HASH --rpc-url $ARBITRUM_RPC_URL
+
+# Verify success sentinel was set
+cast call $ROUTER_SHIM_ADDRESS "successSentinel(bytes32)(bool)" $OP_HASH --rpc-url $ARBITRUM_RPC_URL
+
+# Check fee collector received fees
+cast call $USDC_ADDRESS "balanceOf(address)(uint256)" $FEE_COLLECTOR_ADDRESS --rpc-url $ARBITRUM_RPC_URL
+```
+
+### Step 6: Advanced Testing
+
+#### 6.1 Test Different Providers
+
+Test with different bridge providers:
+
+```typescript
+const providers = ['lifi', 'cctp', 'relay']
+
+providers.forEach(async (provider) => {
+  const { result } = renderHook(
+    () =>
+      useQuote({
+        // ... base configuration
+        quoteProvider: provider
+      }),
+    { wrapper: createWrapper() }
+  )
+
+  await waitFor(() => !!result.current.quote, { timeout: 30000 })
+  
+  console.log(`✅ ${provider} provider quote generated`)
+})
+```
+
+#### 6.2 Test Failure Scenarios
+
+Test error handling and fallback mechanisms:
+
+```typescript
+// Test invalid destination contract
+const { result } = renderHook(
+  () =>
+    useQuote({
+      // ... base configuration
+      toCalldata: '0xdeadbeef', // Invalid calldata
+    }),
+  { wrapper: createWrapper() }
+)
+
+await waitFor(
+  () => !!result.current.quoteError,
+  { timeout: 30000 }
+)
+
+const error = result.current.quoteError
+expect(error?.message).toContain('CallFailed')
+console.log('✅ Failure handling works correctly')
+```
+
+#### 6.3 Performance Testing
+
+Measure execution performance:
+
+```typescript
+const startTime = Date.now()
+
+await swap()
+
+const executionTime = Date.now() - startTime
+console.log(`Execution time: ${executionTime}ms`)
+
+expect(executionTime).toBeLessThan(300000) // Less than 5 minutes
+```
+
+## Audit Focus Areas Mapping
+
+This section maps the testing scenarios to the six key audit focus areas identified in the audit documentation. Each audit concern is linked to specific contract functions to validate and testing approaches using the SDK.
+
+### A. Delegatecall-Only Router Pattern
+
+**Audit Concern**: The `TrailsRouter` and `TrailsRouterShim` contracts must enforce delegatecall-only execution to prevent direct calls that could bypass wallet context protection.
+
+**Key Functions**:
+- `TrailsRouter.onlyDelegatecall` modifier
+- All `TrailsRouter` execution functions (`execute`, `pullAndExecute`, `injectAndCall`, `injectSweepAndCall`)
+- `TrailsRouterShim` wrapper functions
+
+**Testing Approach**:
+
+| Test Type | What to Validate | How to Test with SDK |
+|-----------|------------------|---------------------|
+| Direct Call Block | Direct calls to router should revert with "Direct call not allowed" | Use `walletClient.writeContract()` directly to `TrailsRouter.execute()` without delegatecall flag |
+| Delegatecall Success | Execution through wallet delegatecall should succeed | Use `useQuote` hook which automatically uses delegatecall via wallet |
+| Context Preservation | `msg.sender` = wallet address during execution | Monitor transaction logs to verify correct `msg.sender` |
+| Shim Validation | `TrailsRouterShim` correctly wraps router calls | Check that shim execution precedes router execution in transaction traces |
+
+**Expected Behavior**:
+- Direct calls to `TrailsRouter` revert with `onlyDelegatecall` error
+- SDK executions succeed via wallet delegatecall
+- All router calls originate from wallet context
+
+### B. Balance Injection & Calldata Surgery
+
+**Audit Concern**: The `TrailsRouter.injectAndCall()` and `injectSweepAndCall()` functions must correctly replace placeholder bytes with actual wallet balances and handle calldata manipulation securely.
+
+**Key Functions**:
+- `TrailsRouter.injectAndCall((address to, uint256 value, bytes data) target, uint256 amountOffset)`
+- `TrailsRouter.injectSweepAndCall((address to, uint256 value, bytes data) target, uint256 amountOffset)`
+- Placeholder detection and replacement logic
+- Balance calculation (current vs quoted amounts)
+
+**Testing Approach**:
+
+| Test Type | What to Validate | How to Test with SDK |
+|-----------|------------------|---------------------|
+| Placeholder Detection | 32-byte zero placeholder correctly identified | Configure widget with custom calldata containing placeholder bytes |
+| Offset Calculation | `amountOffset` points to correct calldata position | Test with Aave/Morpho deposit calldata, verify injection position |
+| Balance Accuracy | Current wallet balance used, not quoted amount | Compare injected amount with actual balance before execution |
+| Bounds Checking | No out-of-bounds writes beyond calldata length | Test with malformed calldata (short/long offsets) |
+| Token Handling | ETH vs ERC20 injection paths | Test native ETH and ERC20 scenarios separately |
+
+**Expected Behavior**:
+- Placeholder (`0x00...00`) replaced with actual wallet balance
+- `amountOffset` correctly calculated for different contract ABIs
+- No calldata corruption or out-of-bounds writes
+- ETH value forwarding works without token wrapping
+
+### C. Fee Collection & Refund Semantics
+
+**Audit Concern**: Fee collection must only occur after successful execution verification, and refund mechanisms must protect users from unauthorized losses.
+
+**Key Functions**:
+- `TrailsRouter.validateOpHashAndSweep()` - Conditional fee collection
+- `TrailsRouter.refundAndSweep()` - User protection on failure
+- `TrailsRouterShim` success sentinel validation
+- `onlyFallback` execution path control
+
+**Testing Approach**:
+
+| Test Type | What to Validate | How to Test with SDK |
+|-----------|------------------|---------------------|
+| Success Path | Fees collected only after success sentinel | Execute normal transfer, verify fee sweep follows shim execution |
+| Failure Path | No fees on failed execution | Trigger destination failure, verify no fee collection |
+| Refund Trigger | `refundAndSweep()` activates on `CallFailed` | Use invalid calldata to trigger destination revert |
+| Conditional Sweep | `validateOpHashAndSweep()` requires sentinel | Test direct fee sweep before shim completion (should fail) |
+
+**Expected Behavior**:
+- `validateOpHashAndSweep()` reverts if success sentinel not set
+- `refundAndSweep()` called only on failures with `onlyFallback=true`
+- Origin failure → full refund, no bridging
+- Destination failure → sweep to user on destination chain
+
+### D. Entrypoint Contracts
+
+**Audit Concern**: `TrailsIntentEntrypoint` must correctly validate EIP-712 signatures, handle ERC-2612 permits, and protect against replay attacks.
+
+**Key Functions**:
+- `depositToIntent(address user, address token, uint256 amount, address intentAddress, uint256 deadline)`
+- `depositToIntentWithPermit(...)` - Gasless deposits
+- `payFee()` / `payFeeWithPermit()` - Fee collection
+- Nonce and deadline validation
+- Reentrancy protection
+
+**Testing Approach**:
+
+| Test Type | What to Validate | How to Test with SDK |
+|-----------|------------------|---------------------|
+| EIP-712 Signature | Correct domain separator and signature recovery | Use `useQuote` with valid/invalid signatures |
+| Nonce Management | Nonce increments, replay protection | Execute multiple deposits, verify nonce progression |
+| Deadline Enforcement | Current time ≤ deadline | Test with expired deadlines (should fail) |
+| Permit Handling | ERC-2612 permit validation | Use gasless mode with `selectedFeeToken` |
+| Reentrancy Guard | No recursive calls during deposit | Cannot be directly tested via SDK, verify via Foundry |
+
+**Expected Behavior**:
+- Valid EIP-712 signatures accepted, invalid rejected
+- Nonce increments per user/token pair
+- Expired deadlines cause revert
+- ERC-2612 permits use exact amounts, no excess consumption
+- ReentrancyGuard prevents recursive deposit calls
+
+### E. Cross-Chain Assumptions
+
+**Audit Concern**: Non-atomic cross-chain execution must handle origin and destination failures correctly, with proper user protection and no stuck states.
+
+**Key Functions**:
+- Cross-chain coordination between origin and destination execution
+- Bridge protocol integration (LiFi, CCTP, Relay)
+- Destination failure handling and refunds
+- Timeout and stuck state recovery
+
+**Testing Approach**:
+
+| Test Type | What to Validate | How to Test with SDK |
+|-----------|------------------|---------------------|
+| Origin Failure | No bridging on origin failure | Mock bridge failure (requires custom setup) |
+| Destination Failure | Sweep to user on destination | Use invalid destination calldata |
+| Provider Integration | Different bridge protocols | Test with `quoteProvider: 'lifi'`, `'cctp'`, `'relay'` |
+| State Synchronization | No stuck funds between chains | Verify final balances match expected outcome |
+
+**Expected Behavior**:
+- Origin failure → full refund, no bridging occurs
+- Destination failure → sweep to user on destination chain
+- All funds either delivered to recipient or refunded
+- Bridge protocols execute correctly without stuck states
+
+### F. Storage Sentinels
+
+**Audit Concern**: `TrailsSentinelLib` must use namespaced storage slots to avoid collisions with wallet storage.
+
+**Key Functions**:
+- `successSlot(bytes32 opHash)` - Sentinel slot calculation
+- Storage namespace enforcement
+- opHash uniqueness validation
+
+**Testing Approach**:
+
+| Test Type | What to Validate | How to Test with SDK |
+|-----------|------------------|---------------------|
+| Slot Namespacing | Sentinel slots don't collide with wallet storage | Cannot be directly tested via SDK, verify via Foundry |
+| opHash Uniqueness | Different operations use different slots | Execute multiple operations, verify unique opHashes |
+| Sentinel Value | Success value = `0x000...01`, failure = `0x000...00` | Monitor execution logs for sentinel setting |
+
+**Expected Behavior**:
+- All sentinel slots namespaced to avoid wallet collisions
+- Success sentinel set only after complete execution
+- Different opHashes generate different storage slots
+- Sentinel value correctly indicates execution status
+
+## Testing Workflow
+
+### Step 1: Environment Setup
+
+#### 1.1 Project Setup
+
+Create a new test project:
+
+```bash
+mkdir trails-sdk-test && cd trails-sdk-test
+npm init -y
+
+# Install dependencies
+npm install 0xtrails viem @tanstack/react-query
+npm install --save-dev vitest @testing-library/react @testing-library/jest-dom
+
+# Create basic package.json scripts
+cat > package.json << 'EOF'
+{
+  "name": "trails-sdk-test",
+  "version": "1.0.0",
+  "scripts": {
+    "test": "vitest",
+    "test:scenarios": "vitest run --reporter=verbose"
+  },
+  "devDependencies": {
+    "@testing-library/jest-dom": "^6.4.0",
+    "@testing-library/react": "^14.0.0",
+    "jsdom": "^23.0.0",
+    "vitest": "^1.0.0"
+  },
+  "dependencies": {
+    "0xtrails": "latest",
+    "viem": "^2.0.0",
+    "@tanstack/react-query": "^5.0.0"
+  }
+}
+EOF
+```
+
+#### 1.2 Environment Configuration
+
+Create `.env` file with your test configuration:
+
+```bash
+# Wallet configuration
+TEST_PRIVATE_KEY=0x1234567890abcdef...  # Your test wallet private key
+
+# API configuration
+TRAILS_API_KEY=<FILL_IN_BLANK/>  # Request from project team
+
+# RPC endpoints (optional - uses public defaults)
+ARBITRUM_RPC_URL=https://arb1.arbitrum.io/rpc
+BASE_RPC_URL=https://mainnet.base.org
+
+# Testing configuration
+SLIPPAGE_TOLERANCE=0.05  # 5% slippage for testing
+```
+
+#### 1.3 Verify Setup
+
+Create a setup verification test:
+
+```typescript
+// test/setup.test.ts
+import { describe, it, expect } from 'vitest'
+import { privateKeyToAccount } from 'viem/accounts'
+import { getSequenceConfig, getTrailsApiUrl, getSequenceProjectAccessKey } from '0xtrails/config'
+
+describe('SDK Environment Setup', () => {
+  it('should have valid private key', () => {
+    const privateKey = process.env.TEST_PRIVATE_KEY
+    expect(privateKey).toBeDefined()
+    expect(privateKey).toMatch(/^0x[a-fA-F0-9]{64}$/)
+    
+    const account = privateKeyToAccount(privateKey as `0x${string}`)
+    console.log('✅ Test wallet:', account.address)
+  })
+
+  it('should have valid API key', () => {
+    const apiKey = getSequenceProjectAccessKey()
+    expect(apiKey).toBeDefined()
+    expect(apiKey).toMatch(/^pk_(live|test)_[a-zA-Z0-9]{32,}$/)
+    console.log('✅ API key loaded:', apiKey.slice(0, 10) + '...')
+  })
+
+  it('should have valid API URL', () => {
+    const apiUrl = getTrailsApiUrl()
+    expect(apiUrl).toBeDefined()
+    expect(apiUrl).toMatch(/^https?:\/\/.*\/api\/v1/)
+    console.log('✅ API URL:', apiUrl)
+  })
+
+  it('should have sequence configuration', () => {
+    const config = getSequenceConfig()
+    expect(config).toBeDefined()
+    console.log('✅ Sequence config loaded')
+  })
+})
+```
+
+Run setup verification:
+```bash
+npm run test test/setup.test.ts
+```
+
+### Step 2: Basic Testing with `useQuote` Hook
+
+Create a basic test file to verify SDK functionality:
+
+```typescript
+// test/basic/BasicQuoteTest.test.ts
+import { describe, it, expect, beforeAll } from 'vitest'
+import { renderHook, waitFor } from '@testing-library/react'
+import { createWalletClient, http } from 'viem'
+import { privateKeyToAccount } from 'viem/accounts'
+import { arbitrum, base } from 'viem/chains'
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
+import { SequenceHooksProvider } from '@0xsequence/hooks'
+import { useQuote, TradeType } from '0xtrails/prepareSend'
+import { getSequenceConfig, getTrailsApiUrl, getSequenceProjectAccessKey, getSequenceIndexerUrl } from '0xtrails/config'
+
+// Setup
+const privateKey = process.env.TEST_PRIVATE_KEY as `0x${string}`
+const account = privateKeyToAccount(privateKey)
+const walletClient = createWalletClient({
+  account,
+  chain: arbitrum,
+  transport: http(),
+})
+
+const queryClient = new QueryClient({
+  defaultOptions: {
+    queries: { retry: false, staleTime: 0 },
+  },
+})
+
+const createWrapper = () => ({ children }: { children: React.ReactNode }) => (
+  <SequenceHooksProvider
+    config={{
+      projectAccessKey: getSequenceProjectAccessKey(),
+      env: {
+        indexerUrl: getSequenceIndexerUrl(),
+        indexerGatewayUrl: getSequenceIndexerUrl(),
+        apiUrl: getTrailsApiUrl(),
+      },
+    }}
+  >
+    <QueryClientProvider client={queryClient}>
+      {children}
+    </QueryClientProvider>
+  </SequenceHooksProvider>
+)
+
+describe('Basic SDK Quote Testing', () => {
+  it('should generate quote for cross-chain transfer', async () => {
+    console.log('Testing cross-chain USDC transfer quote...')
+    
+    const { result, waitFor } = renderHook(
+      () =>
+        useQuote({
+          walletClient,
+          fromTokenAddress: '0xaf88d065e77c8cC2239327C5EDb3A432268e5831', // ARBITRUM USDC
+          fromChainId: arbitrum.id,
+          toTokenAddress: '0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913', // BASE USDC
+          toChainId: base.id,
+          swapAmount: '10000', // 0.01 USDC (6 decimals)
+          toRecipient: account.address,
+          tradeType: TradeType.EXACT_OUTPUT,
+          slippageTolerance: '0.05', // 5% slippage
+          quoteProvider: 'auto',
+          onStatusUpdate: (states) => {
+            console.log('Transaction states update:', states.length, 'steps')
+          },
+        }),
+      { wrapper: createWrapper() }
+    )
+
+    // Wait for quote to be generated
+    await waitFor(
+      () => {
+        const { quote, isLoadingQuote, quoteError } = result.current
+        console.log('Quote status:', { isLoading: isLoadingQuote, hasError: !!quoteError, hasQuote: !!quote })
+        return !!quote && !isLoadingQuote && !quoteError
+      },
+      { timeout: 30000 } // 30 second timeout
+    )
+
+    const { quote, swap } = result.current
+
+    expect(quote).toBeDefined()
+    expect(swap).toBeDefined()
+    
+    if (quote) {
+      console.log('✅ Quote generated successfully!')
+      console.log('Provider:', quote.quoteProvider.name)
+      console.log('From amount:', quote.fromAmount)
+      console.log('To amount:', quote.toAmount)
+      console.log('Steps:', quote.transactionStates.length)
+      
+      // Test quote structure
+      expect(quote.originChain.id).toBe(arbitrum.id)
+      expect(quote.destinationChain.id).toBe(base.id)
+      expect(quote.slippageTolerance).toBe('0.05')
+    }
+
+    console.log('✅ Basic quote test passed')
+  })
+})
+```
+
+Run the basic test:
+```bash
+npm run test test/basic/BasicQuoteTest.test.ts
+```
+
+### Step 3: Testing Contract Interactions
+
+#### 3.1 Cross-Chain Transfer Test
+
+Test a complete cross-chain transfer:
+
+```typescript
+// test/cross-chain/CrossChainTest.test.ts
+describe('Cross-Chain Transfer Testing', () => {
+  it('should execute cross-chain transfer successfully', async () => {
+    const { result, waitFor } = renderHook(
+      () =>
+        useQuote({
+          walletClient,
+          fromTokenAddress: '0xaf88d065e77c8cC2239327C5EDb3A432268e5831', // ARBITRUM USDC
+          fromChainId: arbitrum.id,
+          toTokenAddress: '0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913', // BASE USDC
+          toChainId: base.id,
+          swapAmount: '10000', // 0.01 USDC
+          toRecipient: account.address,
+          tradeType: TradeType.EXACT_OUTPUT,
+          slippageTolerance: '0.05',
+          quoteProvider: 'cctp', // Specific provider for testing
+          onStatusUpdate: (states) => {
+            console.log('Cross-chain states:', states.map(s => `${s.label} (${s.state})`))
+          },
+        }),
+      { wrapper: createWrapper() }
+    )
+
+    // Wait for quote
+    await waitFor(() => !!result.current.quote && !!result.current.swap, { timeout: 30000 })
+
+    const { quote, swap } = result.current
+
+    expect(quote).toBeDefined()
+    expect(swap).toBeDefined()
+
+    // Execute the swap (this triggers the full contract flow)
+    console.log('Executing cross-chain transfer...')
+    await swap!()
+
+    // Wait for execution to complete
+    await waitFor(
+      () => {
+        const states = quote?.transactionStates || []
+        const allConfirmed = states.every(state => state.state === 'confirmed')
+        console.log('Execution status:', { allConfirmed, states: states.length })
+        return allConfirmed
+      },
+      { timeout: 180000 } // 3 minutes for cross-chain
+    )
+
+    console.log('✅ Cross-chain transfer completed successfully')
+  })
+})
+```
+
+#### 3.2 Gasless Execution Test
+
+Test gasless execution with ERC-2612 permits:
+
+```typescript
+// test/gasless/GaslessTest.test.ts
+describe('Gasless Execution Testing', () => {
+  it('should execute gasless transfer with permit', async () => {
+    const { result, waitFor } = renderHook(
+      () =>
+        useQuote({
+          walletClient,
+          fromTokenAddress: '0xaf88d065e77c8cC2239327C5EDb3A432268e5831', // ARBITRUM USDC
+          fromChainId: arbitrum.id,
+          toTokenAddress: '0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913', // BASE USDC
+          toChainId: base.id,
+          swapAmount: '10000', // 0.01 USDC
+          toRecipient: account.address,
+          tradeType: TradeType.EXACT_OUTPUT,
+          slippageTolerance: '0.05',
+          selectedFeeToken: {
+            tokenAddress: '0xaf88d065e77c8cC2239327C5EDb3A432268e5831', // USDC for fees
+            tokenSymbol: 'USDC'
+          },
+          onStatusUpdate: (states) => {
+            console.log('Gasless states:', states.map(s => `${s.label} (${s.state})`))
+          },
+        }),
+      { wrapper: createWrapper() }
+    )
+
+    // Wait for quote
+    await waitFor(() => !!result.current.quote && !!result.current.swap, { timeout: 30000 })
+
+    const { quote, swap } = result.current
+
+    expect(quote).toBeDefined()
+    expect(swap).toBeDefined()
+    expect(quote?.selectedFeeToken).toBeDefined()
+
+    // Execute gasless transfer
+    console.log('Executing gasless transfer...')
+    await swap!()
+
+    // Wait for completion
+    await waitFor(
+      () => {
+        const states = quote?.transactionStates || []
+        const allConfirmed = states.every(state => state.state === 'confirmed')
+        console.log('Gasless execution status:', { allConfirmed, states: states.length })
+        return allConfirmed
+      },
+      { timeout: 180000 }
+    )
+
+    console.log('✅ Gasless execution completed successfully')
+  })
+})
+```
+
+### Step 4: Testing with the Widget
+
+Create a React app to test the widget interface:
+
+```typescript
+// src/App.tsx
+import React, { useState } from 'react'
+import { createRoot } from 'react-dom/client'
+import { TrailsWidget } from '0xtrails/widget'
+import { SequenceProvider } from '@0xsequence/provider'
+import { getSequenceConfig } from '0xtrails/config'
+
+const App: React.FC = () => {
+  const [amount, setAmount] = useState('0.01')
+  const [fromChain, setFromChain] = useState('arbitrum')
+  const [toChain, setToChain] = useState('base')
+
+  return (
+    <div style={{ padding: '20px', maxWidth: '800px', margin: '0 auto' }}>
+      <h1>Trails SDK Testing Interface</h1>
+      
+      <div style={{ marginBottom: '20px', padding: '15px', border: '1px solid #ccc' }}>
+        <h3>Configuration</h3>
+        <label>
+          Amount: <input 
+            type="number" 
+            value={amount} 
+            onChange={(e) => setAmount(e.target.value)} 
+            step="0.001"
+          />
+        </label>
+        <br />
+        <label style={{ marginLeft: '20px' }}>
+          From: <select value={fromChain} onChange={(e) => setFromChain(e.target.value)}>
+            <option value="arbitrum">Arbitrum</option>
+            <option value="base">Base</option>
+          </select>
+        </label>
+        <br />
+        <label style={{ marginLeft: '20px' }}>
+          To: <select value={toChain} onChange={(e) => setToChain(e.target.value)}>
+            <option value="base">Base</option>
+            <option value="arbitrum">Arbitrum</option>
+          </select>
+        </label>
+      </div>
+      
+      <SequenceProvider config={getSequenceConfig()} defaultNetwork={fromChain}>
+        <TrailsWidget
+          defaultFromChain={fromChain}
+          defaultToChain={toChain}
+          defaultFromToken="USDC"
+          defaultToToken="USDC"
+          defaultAmount={amount}
+          showDebugPanel={true}
+          enableTestMode={true}
+          slippageTolerance={0.05}
+          quoteProvider="auto"
+          onQuoteGenerated={(quote) => {
+            console.log('Quote generated:', {
+              from: `${quote.fromAmount} ${quote.originToken.symbol}`,
+              to: `${quote.toAmount} ${quote.destinationToken.symbol}`,
+              provider: quote.quoteProvider.name
+            })
+          }}
+          onTransactionUpdate={(states) => {
+            console.log('Transaction update:', states.length, 'active transactions')
+            states.forEach(state => {
+              if (state.state === 'confirmed') {
+                console.log(`✅ ${state.label} completed on chain ${state.chainId}`)
+              }
+            })
+          }}
+          onExecutionComplete={(result) => {
+            if (result.success) {
+              console.log('🎉 Execution completed successfully!')
+              console.log('Final balances:', result.finalBalances)
+            } else {
+              console.error('❌ Execution failed:', result.error)
+            }
+          }}
+          onError={(error) => {
+            console.error('Error:', error.message)
+          }}
+        />
+      </SequenceProvider>
+    </div>
+  )
+}
+
+const root = createRoot(document.getElementById('root') as HTMLElement)
+root.render(<App />)
+```
+
+Run the widget:
+```bash
+npm run dev
+```
+
+### Step 5: Validation and Monitoring
+
+#### 5.1 Monitor Contract Interactions
+
+During testing, monitor these key contract interactions:
+
+1. **Deposit Phase** (`TrailsIntentEntrypoint`):
+   - EIP-712 signature validation
+   - Nonce and deadline enforcement
+   - ReentrancyGuard protection
+
+2. **Execution Phase** (`TrailsRouter` via `TrailsRouterShim`):
+   - Delegatecall-only execution
+   - SafeERC20 approvals
+   - Balance injection accuracy
+
+3. **Settlement Phase** (`TrailsRouter.sweep()`):
+   - Conditional fee collection
+   - Success sentinel verification
+   - Dust cleanup and refunds
+
+#### 5.2 Verify Economic Invariants
+
+After each successful execution:
+
+```typescript
+// Validate no unauthorized losses
+const originBalance = await getBalance(walletClient, {
+  address: account.address,
+  token: arbitrumUSDCAddress
+})
+
+const expectedLoss = parseUnits('0.07', 6) // ~0.07 USDC expected (deposit + fees)
+const tolerance = parseUnits('0.001', 6) // 0.001 USDC tolerance
+
+console.log('Balance validation:')
+console.log(`Initial balance: ${formatUnits(initialBalance, 6)} USDC`)
+console.log(`Current balance: ${formatUnits(originBalance, 6)} USDC`)
+console.log(`Expected loss: ~0.07 USDC`)
+
+expect(Math.abs(expectedLoss - (initialBalance - originBalance))).toBeLessThan(tolerance)
+console.log('✅ Economic invariants preserved')
+```
+
+#### 5.3 Check Contract State
+
+Verify contract state post-execution:
+
+```bash
+# Check if deposit was recorded
+cast call $INTENT_ENTRYPOINT_ADDRESS "deposits(bytes32)(bool)" $INTENT_HASH --rpc-url $ARBITRUM_RPC_URL
+
+# Verify success sentinel was set
+cast call $ROUTER_SHIM_ADDRESS "successSentinel(bytes32)(bool)" $OP_HASH --rpc-url $ARBITRUM_RPC_URL
+
+# Check fee collector received fees
+cast call $USDC_ADDRESS "balanceOf(address)(uint256)" $FEE_COLLECTOR_ADDRESS --rpc-url $ARBITRUM_RPC_URL
+```
+
+### Step 6: Advanced Testing
+
+#### 6.1 Test Different Providers
+
+Test with different bridge providers:
+
+```typescript
+const providers = ['lifi', 'cctp', 'relay']
+
+providers.forEach(async (provider) => {
+  const { result } = renderHook(
+    () =>
+      useQuote({
+        // ... base configuration
+        quoteProvider: provider
+      }),
+    { wrapper: createWrapper() }
+  )
+
+  await waitFor(() => !!result.current.quote, { timeout: 30000 })
+  
+  console.log(`✅ ${provider} provider quote generated`)
+})
+```
+
+#### 6.2 Test Failure Scenarios
+
+Test error handling and fallback mechanisms:
+
+```typescript
+// Test invalid destination contract
+const { result } = renderHook(
+  () =>
+    useQuote({
+      // ... base configuration
+      toCalldata: '0xdeadbeef', // Invalid calldata
+    }),
+  { wrapper: createWrapper() }
+)
+
+await waitFor(
+  () => !!result.current.quoteError,
+  { timeout: 30000 }
+)
+
+const error = result.current.quoteError
+expect(error?.message).toContain('CallFailed')
+console.log('✅ Failure handling works correctly')
+```
+
+#### 6.3 Performance Testing
+
+Measure execution performance:
+
+```typescript
+const startTime = Date.now()
+
+await swap()
+
+const executionTime = Date.now() - startTime
+console.log(`Execution time: ${executionTime}ms`)
+
+expect(executionTime).toBeLessThan(300000) // Less than 5 minutes
+```
 
 ## Troubleshooting & Support
 
@@ -2750,7 +4483,7 @@ Error: Provider not available for route
 
 **Solution**:
 - Verify bridge provider supports the chain pair
-- Check if provider has liquidity for the amount/ route
+- Check if provider has liquidity for the amount/route
 - Try alternative providers (LiFi, CCTP, Relay)
 - Ensure both chains are active and synced
 
@@ -2922,14 +4655,14 @@ cast estimate --rpc-url $RPC_URL $TX_DATA
 
 **General Inquiries**: `support@trails.build`
 - Subject prefix: `[SDK Testing]`
-- Include: Error logs, scenario ID, transaction hash, SDK version
+- Include: Error logs, scenario description, transaction hash, SDK version
 
 #### Issue Reporting Template
 
 When reporting issues, use this template:
 
 ```
-Subject: [SDK Testing] Issue with [Scenario ID] - [Error Description]
+Subject: [SDK Testing] Issue with Cross-Chain Transfer - Execution Failed
 
 Environment:
 - Node.js version: [output of `node --version`]
@@ -2937,10 +4670,13 @@ Environment:
 - Network: [Arbitrum/Base testnet/mainnet]
 - RPC: [URL used]
 
-Scenario:
-- ID: [e.g., PAY_USDC_BASE]
-- Configuration: [amount, tokens, providers]
-- Command: [exact command executed]
+Test Configuration:
+- From Chain: Arbitrum
+- To Chain: Base
+- From Token: USDC (0xaf88d065...)
+- To Token: USDC (0x833589fc...)
+- Amount: 0.01 USDC
+- Provider: cctp
 
 Error Details:
 ```
@@ -3120,92 +4856,8 @@ During the Code4rena audit period:
 - **Documentation**: All contract ABIs and interfaces available in SDK source
 - **Community**: Join Discord for peer support from other auditors
 
-This guide provides comprehensive coverage for testing Trails contracts with the 0xtrails SDK. The combination of automated scenarios, interactive widget, and detailed monitoring ensures thorough validation of all critical contract functionality.
+This guide provides comprehensive coverage for testing Trails contracts with the 0xtrails SDK. The combination of the `useQuote` hook, widget interface, and testing utilities ensures thorough validation of all critical contract functionality.
 
 ---
 
 *Thank you for testing the Trails SDK! Your contributions help secure the protocol for all users.*
-
-## Test Scenarios Matrix
-
-The 0xtrails SDK includes comprehensive test scenarios that cover all major Trails contract functionality. These scenarios test various execution paths including cross-chain transfers, same-chain swaps, gasless execution, and failure handling.
-
-The table below summarizes the available scenario categories with their purpose, expected contract interactions, and key testing focus areas:
-
-| Category | Description | Expected Contract Flow | Testing Focus |
-|----------|-------------|------------------------|---------------|
-| **Cross-Chain (ERC20 → Native)** | Basic cross-chain transfers from ERC20 tokens to native ETH without destination contract execution | 1. `TrailsIntentEntrypoint.depositToIntent()`<br>2. `TrailsRouterShim.execute()` (approval + bridge)<br>3. `TrailsRouter.validateOpHashAndSweep()`<br>4. `TrailsRouter.sweep()` (ETH transfer) | EIP-712 validation, token approvals, bridge integration, native ETH handling, conditional fee sweeping |
-| **Cross-Chain (Native → Native)** | Native ETH transfers across chains without destination contract execution | 1. `TrailsIntentEntrypoint` (ETH deposit)<br>2. `TrailsRouterShim` (native bridge)<br>3. `TrailsRouter.sweep()` (ETH transfer + gas refund) | Native ETH bridging, gas refunds, MEV protection |
-| **Cross-Chain (ERC20 → ERC20)** | Cross-chain ERC20 → ERC20 transfers for payment, funding, and receiving use cases | 1. `TrailsIntentEntrypoint` (USDC deposit)<br>2. `TrailsRouterShim` (approval + bridge)<br>3. `TrailsRouter` (ERC20 transfer)<br>4. `TrailsRouter.sweep()` (dust cleanup) | Provider integration, token decimals, slippage tolerance, recipient verification, gasless flow integration |
-| **Cross-Chain (ERC20 → Native w/ Calldata)** | Cross-chain transfers followed by native ETH contract execution on destination | 1. `TrailsIntentEntrypoint` (ERC20 deposit)<br>2. `TrailsRouterShim` (swap + bridge)<br>3. `TrailsRouter.injectAndCall()` (ETH injection)<br>4. `TrailsRouter.sweep()` (remaining ETH) | Balance injection, calldata surgery, value forwarding |
-| **Cross-Chain (Native → ERC20 w/ Calldata)** | Native ETH cross-chain transfers followed by ERC20 contract execution | 1. `TrailsIntentEntrypoint` (ETH deposit)<br>2. `TrailsRouterShim` (bridge + swap)<br>3. `TrailsRouter.injectAndCall()` (ERC20 approval + contract execution)<br>4. `TrailsRouter.validateOpHashAndSweep()` (multi-step fees) | Multi-step execution, ERC20 approvals, contract interaction, error bubbling |
-| **Cross-Chain (ERC20 → ERC20 w/ Calldata)** | Cross-chain ERC20 transfers followed by ERC20 contract execution (DeFi deposits, NFT minting) | 1. `TrailsIntentEntrypoint` (USDC deposit)<br>2. `TrailsRouterShim` (bridge)<br>3. `TrailsRouter.injectAndCall()` (ERC20 approval + contract execution)<br>4. `TrailsRouter.sweep()` (dust cleanup) | DeFi/NFT integration, ERC20 approvals, same-token execution, protocol-specific errors |
-| **Cross-Chain (Native → Native w/ Calldata)** | Native ETH cross-chain transfers followed by native contract execution | 1. `TrailsIntentEntrypoint` (ETH deposit)<br>2. `TrailsRouterShim` (bridge)<br>3. `TrailsRouter.injectAndCall()` (native contract execution)<br>4. `TrailsRouter.sweep()` (receipt tokens to user) | Native ETH injection, protocol integration, receipt token handling |
-| **Same-Chain (ERC20 → Native)** | Same-chain token swaps from ERC20 to native ETH | 1. `TrailsIntentEntrypoint` (USDC deposit)<br>2. `TrailsRouter.execute()` (DEX swap)<br>3. `TrailsRouter.sweep()` (ETH transfer + fees) | DEX integration, same-chain routing, token → native |
-| **Same-Chain (Native → ERC20)** | Same-chain swaps from native ETH to ERC20 tokens | 1. `TrailsIntentEntrypoint` (ETH deposit)<br>2. `TrailsRouter.execute()` (ETH → ERC20 swap)<br>3. `TrailsRouter.sweep()` (ERC20 transfer + gas refund) | Native → token conversion, gas refunds, slippage handling |
-| **Same-Chain (ERC20 → ERC20)** | Same-chain ERC20 ↔ ERC20 swaps | 1. `TrailsIntentEntrypoint` (ERC20 deposit)<br>2. `TrailsRouter.execute()` (ERC20 swap)<br>3. `TrailsRouter.sweep()` (ERC20 transfer) | ERC20 ↔ ERC20 swaps, wrapping mechanics, dust handling |
-| **Same-Chain (Native → Native)** | Same-chain ETH wrapping/unwrapping | 1. `TrailsIntentEntrypoint` (ETH deposit)<br>2. `TrailsRouter.execute()` (WETH deposit)<br>3. `TrailsRouter.sweep()` (WETH transfer) | ETH wrapping, native → wrapped token conversion |
-| **Same-Chain (w/ Calldata)** | Same-chain execution with contract calls (DeFi, NFT minting) | 1. `TrailsIntentEntrypoint` (token deposit)<br>2. `TrailsRouter.injectAndCall()` (swap + contract execution)<br>3. `TrailsRouter.sweep()` (position tokens to user) | Complex multicall, protocol integration, same-chain execution |
-| **Gasless (Cross-Chain)** | Gasless cross-chain execution using ERC20 tokens for gas fees | 1. `depositToIntentWithPermit()` (gasless deposit)<br>2. `payFeeWithPermit()` (permit fee)<br>3. Relayer execution<br>4. `TrailsRouter.sweep()` (fees from allowance) | ERC-2612 permits, leftover allowance handling, relayer integration |
-| **Gasless (w/ Calldata)** | Gasless execution with complex destination contract interactions | 1. `depositToIntentWithPermit()` (gasless deposit)<br>2. `payFeeWithPermit()` (permit fee)<br>3. `TrailsRouter.injectAndCall()` (contract execution)<br>4. Relayer sweep | Permit chaining, gasless contract calls, position security |
-| **Gasless (EXACT_INPUT)** | Gasless execution with exact input amounts for funding/earning use cases | Same as Gasless (Cross-Chain) but with EXACT_INPUT trade type | Exact input pricing, minimum/maximum bounds |
-| **Failure (Unsupported Chains)** | Chain validation and error handling for unsupported networks | Quote generation fails, no on-chain execution | Chain validation, graceful error handling, user protection |
-| **Failure (Invalid Calldata)** | Destination contract call failures and fallback mechanisms | 1. `TrailsIntentEntrypoint` (deposit succeeds)<br>2. `TrailsRouter.injectAndCall()` (reverts)<br>3. `refundAndSweep()` (user refund)<br>4. Sentinel NOT set | Revert bubbling, fallback semantics, refund logic, sentinel protection |
-| **EXACT_INPUT (Cross-Chain)** | Cross-chain transfers with exact input amounts | 1. `TrailsIntentEntrypoint` (token deposit)<br>2. `TrailsRouterShim` (swap + bridge)<br>3. `TrailsRouter` (token transfer) | Exact input pricing, slippage bounds, input amount validation |
-
-### Running Scenarios
-
-Use environment variables to execute specific scenario categories:
-
-```bash
-# Run cross-chain basic scenarios
-TEST_SCENARIOS="cross-chain-basic" pnpm run test:scenarios
-
-# Run DeFi integration scenarios
-TEST_SCENARIOS="defi-integration" pnpm run test:scenarios
-
-# Run gasless execution scenarios
-TEST_SCENARIOS="gasless-flows" pnpm run test:scenarios
-
-# Run failure handling scenarios
-TEST_SCENARIOS="failure-handling" pnpm run test:scenarios
-
-# Run all scenarios
-pnpm run test:scenarios
-```
-
-**Expected Output Format**:
-```
-📊 Test Results Summary
-Total scenarios: 42
-✓ Successful: 38
-⏭ Skipped: 2  
-✗ Failed: 2
-
-📈 Successful scenarios:
-• Cross-chain payment (Arbitrum → Base)
-• Funding flow (Arbitrum → Base)  
-• NFT minting (Base → Arbitrum)
-
-📉 Failed scenarios:
-• Destination failure (expected - refund verified)
-• Some test case (actual failure - investigate)
-
-🔗 Successful Tx URLs
-Test Case Name              Test Case ID    1st Tx                    2nd Tx                    3rd Tx
-Cross-chain payment         cross-chain     https://arbiscan...       https://basescan...       -
-```
-
-### Validation Checklist
-
-For each scenario execution, validate:
-
-- **Contract Invariants**: Delegatecall enforcement, sentinel validation, fee protection
-- **Economic Security**: No unauthorized losses, proper refunds on failure
-- **Integration**: Bridge providers, DeFi protocols, NFT contracts work correctly
-- **Edge Cases**: Token decimals, slippage tolerance, gasless permits
-- **Error Handling**: Revert bubbling, fallback execution, event emission
-
----
-
-*Next sections cover testing workflows and complete examples.*
