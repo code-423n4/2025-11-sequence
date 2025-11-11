@@ -136,6 +136,8 @@ Protocol is **fully permissionless** for the in-scope contracts, with all flows 
 
 ## Running tests
 
+The [SDK testing guide](https://github.com/code-423n4/2025-11-sequence/blob/main/SDK_TESTING_GUIDE.md) provides step-by-step instructions for testing the contracts using the SDK.
+
 ### Prerequisites
 
 The repository utilizes the `foundry` (`forge`) toolkit to compile its contracts, and contains several dependencies through `foundry` that will be automatically installed whenever a `forge` command is issued.
