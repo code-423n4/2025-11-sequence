@@ -50,7 +50,9 @@ This transaction rails module is a chain abstraction orchestration protocol that
 ## Links
 
 - **Previous audits:** [Quantstamp, October 2025](https://github.com/0xsequence/trails-contracts/blob/master/audits/quanstamp-audit-2025-10-23.pdf)
-- **Documentation:** https://docs.trails.build/
+- **Documentation:**
+    - https://docs.trails.build/
+    - [SDK testing guide](https://github.com/code-423n4/2025-11-sequence/blob/main/SDK_TESTING_GUIDE.md): step-by-step instructions for testing the Trails contracts using the SDK
 - **Website:** https://trails.build/
 - **X/Twitter:** https://x.com/0xsequence
 
