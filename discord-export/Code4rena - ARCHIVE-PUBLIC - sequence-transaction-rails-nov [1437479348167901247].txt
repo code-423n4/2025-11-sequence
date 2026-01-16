@@ -1,0 +1,99 @@
+==============================================================
+Guild: Code4rena
+Channel: ARCHIVE-PUBLIC / sequence-transaction-rails-nov
+==============================================================
+
+[11/11/2025 18:09] thebrittfactor
+👋 Hello and welcome to the **$18,500 in USDC Sequence: Transaction Rails** audit channel!
+
+📆 Audit opens Tuesday, 11 November 2025 (20:00 UTC) and runs through Monday, 17 November 2025 (20:00 UTC) (6 days).
+
+We'll be posting relevant links, documentation, etc. here, so if you intend to participate in this audit, consider enabling notifications for this channel. 🐺 ⏰
+
+**❗A coded, runnable PoC is required for all High/Medium submissions to this audit.**
+- The audit repo includes a basic PoC template to run the test suite.
+- PoCs **must** use the test suite provided in the audit repo.
+- Your submission will be marked as `Insufficient` if the POC is not runnable and working with the provided test suite.
+- Exception: PoC is optional (though recommended) for wardens with signal ≥ 0.68
+
+The audit repo will include a list of findings identified by [V12](https://v12.zellic.io/), [Zellic's](https://zellic.io/) in-house AI auditing tool.
+[All issues found by V12](https://github.com/code-423n4/2025-11-sequence?tab=readme-ov-file#v12-findings) will be judged as out of scope and ineligible for awards.
+
+Join the audit: https://code4rena.com/audits/2025-11-sequence-trails
+
+
+[11/11/2025 20:03] thebrittfactor
+🔎 **Got audit-related questions? Here's your roadmap** 
+
+Find the information you need efficiently:
+
+1. Step 1: **Review project documentation** in the audit repo. [Join the audit](https://code4rena.com/audits/2025-11-sequence-trails) for access.
+2. Step 2: Use **🤖 Docs Wolf,** C4's documentation bot assistant. Open a private thread, tag `@Docs Wolf`, and ask your question. The bot will make its best attempt to answer based on the codebase and documentation, and link you to relevant resources.
+3. Step 3: If you still need clarification after reviewing the docs, feel free to **ask the Sequence team** directly. From [the audit page](https://code4rena.com/audits/2025-11-sequence-trails), join the audit and select the `Q & A` tab.
+
+To ensure sponsors can focus their time on questions that truly need their expertise, please: 
+
+- Reference what you've already checked in the docs
+- Be specific about what you need clarified
+- Use thread replies to keep discussions organized
+
+Good hunting!
+
+
+[11/12/2025 11:28] cloudellie
+GM wardens - we've received some reports that Docs Wolf is not responding. Our dev team will look into it when they're online, and we'll post an update here when the issue is resolved.
+
+
+[11/12/2025 13:41] thebrittfactor
+@🐺Wardens - Docs Wolf should now be up and running! Please let us know in #❓・questions if you encounter any issues.
+
+{Reactions}
+🫡 (4) 
+
+[11/17/2025 20:02] C4
+**🚨 AUDIT ALERT**
+
+@🐺Wardens The **Sequence: Transaction Rails** audit is now closed! Huge thanks to everyone who participated 🔍, whether you submitted a finding or not.
+
+What's next: The sponsor team and judge will review the findings over the next couple of weeks. Progress through the judging, awarding, and reporting phases can be tracked via [the audit page](https://code4rena.com/audits/2025-11-sequence-transaction-rails).
+
+{Reactions}
+❤️ (12) rocketship (3) 
+
+[12/05/2025 17:45] kobi_c4
+🤑 🎉  Awards for **Sequence: Transaction Rails**:
+
+$284.21 USDC » @0xBug_X
+$189.47 USDC » @Agontuk
+$126.32 USDC » @hermes
+
+🏁 Findings summary
+--------------------------------------—
+0 High risk findings
+0 Med risk findings
+699 wardens participated
+
+Top QA report: 0xBug_X
+
+Awards will be distributed on Ethereum within the next week. Congratulations all!  💸 💸 💸
+
+⚠️ Awardees, be sure to [complete your tax reporting info](https://docs.code4rena.com/awarding/incentive-model-and-awards/awarding-process#tax-information-for-code4rena-contributors-wardens-judges-etc) if you haven't already. This must be completed within 30 days (i.e. before Monday, 05 January 2026) to receive your award distribution for this audit.
+
+{Embed}
+https://docs.code4rena.com/awarding/incentive-model-and-awards/awarding-process
+Awarding process | Code4rena
+
+{Reactions}
+c4ship (6) 👏 (4) 
+
+[01/09/2026 01:01] C4
+ℹ️ This channel is pending archive.   As a result, any private threads will be permanently deleted 01/17/2026 00:55. Please make sure to grab anything you might need before then.
+
+
+[01/15/2026 18:00] C4
+ℹ️ Reminder: this channel will be deleted after 24 hours.
+
+
+==============================================================
+Exported 8 message(s)
+==============================================================
